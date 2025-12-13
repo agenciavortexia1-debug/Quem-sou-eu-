@@ -23,29 +23,97 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   const [connectionError, setConnectionError] = useState('');
   
   // Game State
-  const [myTargetCharacter, setMyTargetCharacter] = useState(''); // Who I defined (My opponent's character)
-  const [mySecretIdentity, setMySecretIdentity] = useState('');   // Who I am (Defined by opponent)
+  const [myTargetCharacter, setMyTargetCharacter] = useState(''); // Quem eu defini (personagem do oponente)
+  const [mySecretIdentity, setMySecretIdentity] = useState('');   // Quem eu sou (definido pelo oponente)
   const [setupInput, setSetupInput] = useState('');
   const [isWaitingForOpponentSetup, setIsWaitingForOpponentSetup] = useState(false);
   
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [currentInput, setCurrentInput] = useState('');
   const [isMyTurn, setIsMyTurn] = useState(false);
-  const [pendingGuess, setPendingGuess] = useState<string | null>(null); // If opponent made a guess
+  const [pendingGuess, setPendingGuess] = useState<string | null>(null);
   const [isGuessingMode, setIsGuessingMode] = useState(false);
 
   const [winner, setWinner] = useState<'me' | 'opponent' | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll chat
+  // Ref para guardar o manipulador de pacotes atualizado (Evita Stale Closure)
+  const handlePacketRef = useRef<(packet: NetworkPacket) => void>(() => {});
+
+  // 1. Auto-scroll chat
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, pendingGuess]);
 
-  // Init Peer
+  // 2. Monitorar transição de SETUP para PLAYING
+  // Isso corrige o bug de travamento: assim que tivermos as duas infos, o jogo começa.
+  useEffect(() => {
+    if (phase === Phase.SETUP && myTargetCharacter && mySecretIdentity) {
+      setPhase(Phase.PLAYING);
+      setIsWaitingForOpponentSetup(false);
+    }
+  }, [phase, myTargetCharacter, mySecretIdentity]);
+
+  // 3. Atualizar o Ref do manipulador toda vez que o estado mudar
+  useEffect(() => {
+    handlePacketRef.current = (packet: NetworkPacket) => {
+      switch (packet.type) {
+        case PacketType.SETUP_CHARACTER:
+          setMySecretIdentity(packet.payload);
+          // A transição de fase agora é tratada pelo useEffect acima
+          break;
+        
+        case PacketType.QUESTION:
+          setMessages(prev => [...prev, {
+            sender: 'opponent',
+            type: 'text',
+            content: packet.payload,
+            timestamp: Date.now()
+          }]);
+          break;
+
+        case PacketType.ANSWER:
+          setMessages(prev => [...prev, {
+            sender: 'opponent',
+            type: 'answer',
+            content: packet.payload,
+            answerType: packet.payload,
+            timestamp: Date.now()
+          }]);
+          setIsMyTurn(true);
+          break;
+
+        case PacketType.GUESS:
+          setPendingGuess(packet.payload);
+          break;
+
+        case PacketType.GUESS_RESULT:
+          const { correct, guess } = packet.payload;
+          setMessages(prev => [...prev, {
+            sender: 'opponent',
+            type: 'guess',
+            content: `Chutou: ${guess} - ${correct ? 'CORRETO!' : 'ERROU!'}`,
+            timestamp: Date.now()
+          }]);
+          if (correct) {
+            setWinner('opponent');
+            setPhase(Phase.GAME_OVER);
+          } else {
+            setIsMyTurn(true);
+          }
+          break;
+        
+        case PacketType.RESTART:
+          resetGame(false);
+          break;
+      }
+    };
+  }); // Sem array de dependências, atualiza a cada render
+
+  // 4. Inicializar PeerJS (Apenas uma vez)
   useEffect(() => {
     const init = async () => {
       try {
@@ -54,7 +122,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
         if (isHost) {
           setPhase(Phase.LOBBY);
         } else {
-          setPhase(Phase.LOBBY); // Joiner sees input field
+          setPhase(Phase.LOBBY);
         }
       } catch (err) {
         setConnectionError('Falha ao conectar ao servidor de rede.');
@@ -63,17 +131,17 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
 
     peerService.onConnectCallback = () => {
       setPhase(Phase.SETUP);
-      // Host goes first by default
       setIsMyTurn(isHost);
     };
 
+    // Aqui usamos o Ref, que sempre terá a versão mais nova da função handlePacketRef.current
     peerService.onDataCallback = (packet: NetworkPacket) => {
-      handlePacket(packet);
+      handlePacketRef.current(packet);
     };
 
     peerService.onCloseCallback = () => {
       setConnectionError('Oponente desconectado.');
-      setPhase(Phase.CONNECTING); // Or error state
+      setPhase(Phase.CONNECTING);
     };
 
     init();
@@ -83,63 +151,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost]);
-
-  const handlePacket = (packet: NetworkPacket) => {
-    switch (packet.type) {
-      case PacketType.SETUP_CHARACTER:
-        setMySecretIdentity(packet.payload);
-        if (myTargetCharacter) {
-           // Both ready (I already set theirs, they just set mine)
-           setPhase(Phase.PLAYING);
-        }
-        break;
-      
-      case PacketType.QUESTION:
-        setMessages(prev => [...prev, {
-          sender: 'opponent',
-          type: 'text',
-          content: packet.payload,
-          timestamp: Date.now()
-        }]);
-        // It's technically still opponent's turn until I answer
-        break;
-
-      case PacketType.ANSWER:
-        setMessages(prev => [...prev, {
-          sender: 'opponent',
-          type: 'answer',
-          content: packet.payload,
-          answerType: packet.payload,
-          timestamp: Date.now()
-        }]);
-        setIsMyTurn(true); // Turn passes back to me after they answer my question
-        break;
-
-      case PacketType.GUESS:
-        setPendingGuess(packet.payload);
-        break;
-
-      case PacketType.GUESS_RESULT:
-        const { correct, guess } = packet.payload;
-        setMessages(prev => [...prev, {
-          sender: 'opponent',
-          type: 'guess',
-          content: `Chutou: ${guess} - ${correct ? 'CORRETO!' : 'ERROU!'}`,
-          timestamp: Date.now()
-        }]);
-        if (correct) {
-          setWinner('opponent');
-          setPhase(Phase.GAME_OVER);
-        } else {
-          setIsMyTurn(true); // I get turn back
-        }
-        break;
-      
-      case PacketType.RESTART:
-        resetGame(false);
-        break;
-    }
-  };
 
   const handleJoin = () => {
     if (!hostIdInput) return;
@@ -151,10 +162,10 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     setMyTargetCharacter(setupInput);
     peerService.send(PacketType.SETUP_CHARACTER, setupInput);
     
-    if (mySecretIdentity) {
-      // I received mine already, so we can start
-      setPhase(Phase.PLAYING);
-    } else {
+    // Não tentamos mudar de fase aqui manualmente. 
+    // O useEffect [phase, myTargetCharacter, mySecretIdentity] fará isso automaticamente
+    // quando a resposta chegar (ou se já tiver chegado).
+    if (!mySecretIdentity) {
       setIsWaitingForOpponentSetup(true);
     }
   };
@@ -163,7 +174,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     if (!currentInput.trim()) return;
     
     if (isGuessingMode) {
-      // Sending a Guess
       peerService.send(PacketType.GUESS, currentInput);
       setMessages(prev => [...prev, {
         sender: 'me',
@@ -171,9 +181,8 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
         content: `Eu chuto que sou: ${currentInput}`,
         timestamp: Date.now()
       }]);
-      setIsMyTurn(false); // Wait for confirmation
+      setIsMyTurn(false);
     } else {
-      // Sending a Question
       peerService.send(PacketType.QUESTION, currentInput);
       setMessages(prev => [...prev, {
         sender: 'me',
@@ -181,7 +190,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
         content: currentInput,
         timestamp: Date.now()
       }]);
-      setIsMyTurn(false); // Wait for answer
+      setIsMyTurn(false);
     }
     setCurrentInput('');
     setIsGuessingMode(false);
@@ -196,21 +205,17 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
       answerType: answer,
       timestamp: Date.now()
     }]);
-    setIsMyTurn(false); // Turn goes to opponent
+    setIsMyTurn(false);
   };
 
   const resolveGuess = (correct: boolean) => {
     peerService.send(PacketType.GUESS_RESULT, { correct, guess: pendingGuess });
     setPendingGuess(null);
     if (correct) {
-      setWinner('me'); // I confirmed they are correct, so THEY win? No wait.
-      // If I confirm THEY are correct, THEY win.
-      // If winner is 'me', it means *I* won. If winner is 'opponent', *they* won.
-      // Logic: I confirmed their guess. They won.
-      setWinner('opponent');
+      setWinner('opponent'); // Eu confirmei que eles acertaram, então eles ganham.
       setPhase(Phase.GAME_OVER);
     } else {
-      setIsMyTurn(true); // My turn now
+      setIsMyTurn(true);
     }
   };
 
@@ -223,7 +228,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     setIsWaitingForOpponentSetup(false);
     setWinner(null);
     setPhase(Phase.SETUP);
-    setIsMyTurn(isHost); // Host starts again
+    setIsMyTurn(isHost);
   };
 
   // --- RENDERERS ---
