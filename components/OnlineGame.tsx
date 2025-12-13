@@ -24,6 +24,16 @@ const normalizeString = (str: string) => {
     .trim();
 };
 
+// --- COMPONENTES AUXILIARES (Definidos fora para evitar re-montagem e perda de foco) ---
+
+const CardWrapper: React.FC<{children: React.ReactNode}> = ({children}) => (
+  <div className="flex flex-col h-full justify-center px-4 md:px-0">
+      <div className="w-full max-w-md mx-auto bg-slate-800 p-6 md:p-8 rounded-2xl border border-slate-700 shadow-xl">
+          {children}
+      </div>
+  </div>
+);
+
 const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   // --- CONNECTION STATE ---
   const [phase, setPhase] = useState<Phase>(Phase.CONNECTING);
@@ -44,6 +54,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   const [gameResult, setGameResult] = useState<'VICTORY' | 'DEFEAT' | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Ref para callbacks permite que o listener do PeerJS acesse o estado mais recente
   const handlePacketRef = useRef<(packet: NetworkPacket) => void>(() => {});
 
   // Auto-scroll
@@ -51,7 +62,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, phase]); // Adicionado phase para garantir scroll ao entrar no jogo
 
   // Detector de Início de Jogo
   useEffect(() => {
@@ -61,13 +72,16 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     }
   }, [phase, myCharacter, opponentCharacter, isHost]);
 
-  // --- PACKET HANDLER ---
+  // --- PACKET HANDLER (Atualiza a ref a cada render) ---
   useEffect(() => {
     handlePacketRef.current = (packet: NetworkPacket) => {
       switch (packet.type) {
         case PacketType.EXCHANGE_CHARACTER:
+          // Evita loop infinito se o valor for o mesmo
           if (opponentCharacter === packet.payload) return;
+          
           setOpponentCharacter(packet.payload);
+          // Handshake de confirmação: se já escolhi o meu, reenvio para garantir que o oponente tenha
           if (myCharacter) {
              peerService.send(PacketType.EXCHANGE_CHARACTER, myCharacter);
           }
@@ -90,6 +104,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             timestamp: Date.now()
           }]);
           
+          // Lógica de turno baseada na resposta
           const isNegative = packet.payload === AnswerType.NO || packet.payload === AnswerType.PROBABLY_NOT;
           if (isNegative) {
             setIsMyTurn(false); 
@@ -108,40 +123,58 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
           break;
       }
     };
-  });
+  }); // Sem array de dependências: roda todo render para atualizar a ref
 
   // --- PEER INITIALIZATION ---
   useEffect(() => {
+    let mounted = true;
+
     const init = async () => {
       try {
         const id = await peerService.initialize();
-        setMyId(id);
-        setPhase(Phase.LOBBY);
+        if (mounted) {
+          setMyId(id);
+          setPhase(Phase.LOBBY);
+        }
       } catch (err) {
-        setConnectionError('Erro na conexão P2P.');
+        if (mounted) {
+          console.error(err);
+          setConnectionError('Erro ao conectar ao servidor P2P.');
+        }
       }
     };
 
+    // Configura callbacks do serviço
     peerService.onConnectCallback = () => {
-      setPhase(Phase.SETUP);
+      if (mounted) setPhase(Phase.SETUP);
     };
 
-    peerService.onDataCallback = (packet) => handlePacketRef.current(packet);
+    peerService.onDataCallback = (packet) => {
+      // Chama a função da ref que tem acesso ao estado atual via closure do render
+      if (mounted) handlePacketRef.current(packet);
+    };
 
     peerService.onCloseCallback = () => {
-      setConnectionError('Oponente desconectou.');
-      setPhase(Phase.CONNECTING);
+      if (mounted) {
+        setConnectionError('Conexão perdida.');
+        setPhase(Phase.CONNECTING);
+      }
     };
 
     init();
-    return () => peerService.destroy();
+
+    return () => {
+      mounted = false;
+      peerService.destroy();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // Executa apenas na montagem
 
   // --- ACTIONS ---
 
   const handleJoin = () => {
     if (!hostIdInput) return;
+    setConnectionError(''); // Limpa erros anteriores
     peerService.connect(hostIdInput);
   };
 
@@ -161,6 +194,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     const guess = normalizeString(currentInput);
     const target = normalizeString(opponentCharacter);
 
+    // Validação de vitória
     if (opponentCharacter && guess === target) {
       setGameResult('VICTORY');
       setPhase(Phase.GAME_OVER);
@@ -208,32 +242,22 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     setIsMyTurn(isHost);
   };
 
-  // --- RENDER UTILS ---
-  // Wrapper padrão para telas de "Menu/Card"
-  const CardWrapper: React.FC<{children: React.ReactNode}> = ({children}) => (
-    <div className="flex flex-col h-full justify-center px-4 md:px-0">
-        <div className="w-full max-w-md mx-auto bg-slate-800 p-6 md:p-8 rounded-2xl border border-slate-700 shadow-xl">
-            {children}
-        </div>
-    </div>
-  );
-
   // --- RENDER ---
 
   if (connectionError) return (
     <CardWrapper>
-      <div className="flex flex-col items-center justify-center text-center">
+      <div className="flex flex-col items-center justify-center text-center animate-in fade-in zoom-in duration-300">
         <AlertTriangle className="w-16 h-16 text-red-500 mb-4" />
-        <p className="text-white mb-4">{connectionError}</p>
-        <button onClick={onBack} className="bg-slate-700 px-6 py-3 rounded-xl w-full">Voltar</button>
+        <p className="text-white mb-4 font-medium">{connectionError}</p>
+        <button onClick={onBack} className="bg-slate-700 hover:bg-slate-600 px-6 py-3 rounded-xl w-full transition-colors">Voltar para o Menu</button>
       </div>
     </CardWrapper>
   );
 
   if (phase === Phase.CONNECTING) return (
     <div className="flex flex-col items-center justify-center h-full text-indigo-400">
-      <div className="animate-spin w-10 h-10 border-4 border-current border-t-transparent rounded-full mb-4"></div>
-      Carregando...
+      <div className="animate-spin w-12 h-12 border-4 border-current border-t-transparent rounded-full mb-4"></div>
+      <p className="animate-pulse">Conectando aos servidores...</p>
     </div>
   );
 
@@ -245,19 +269,41 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
       {isHost ? (
         <div className="text-center">
           <h2 className="text-2xl font-bold text-white mb-2">Código da Sala</h2>
-          <div className="flex bg-slate-950 p-4 rounded-xl border border-slate-700 mb-6 gap-2 items-center">
-            <code className="flex-1 text-2xl font-mono text-indigo-400 tracking-wider">{myId}</code>
-            <button onClick={() => navigator.clipboard.writeText(myId)} className="p-2 active:bg-slate-800 rounded"><Copy className="text-slate-400" /></button>
+          <p className="text-slate-400 text-sm mb-4">Envie este código para o seu oponente</p>
+          <div className="flex bg-slate-950 p-4 rounded-xl border border-slate-700 mb-6 gap-2 items-center group relative overflow-hidden">
+            <code className="flex-1 text-2xl font-mono text-indigo-400 tracking-wider relative z-10">{myId}</code>
+            <button 
+              onClick={() => {
+                navigator.clipboard.writeText(myId);
+                // Feedback visual poderia ser adicionado aqui
+              }} 
+              className="p-3 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded-lg transition-colors z-10"
+              title="Copiar Código"
+            >
+              <Copy className="text-slate-300" size={20} />
+            </button>
           </div>
-          <div className="flex justify-center gap-2 text-slate-500 animate-pulse items-center">
+          <div className="flex justify-center gap-2 text-slate-500 animate-pulse items-center bg-slate-900/50 py-2 rounded-lg">
             <RefreshCw className="animate-spin" size={16} /> Aguardando Oponente...
           </div>
         </div>
       ) : (
         <div>
-          <h2 className="text-2xl font-bold text-white mb-4">Entrar</h2>
-          <input value={hostIdInput} onChange={e => setHostIdInput(e.target.value)} placeholder="Cole o código aqui" className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-6 text-center font-mono text-lg" />
-          <button onClick={handleJoin} disabled={!hostIdInput} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl text-lg shadow-lg">Conectar</button>
+          <h2 className="text-2xl font-bold text-white mb-2">Entrar na Arena</h2>
+          <p className="text-slate-400 text-sm mb-6">Insira o código fornecido pelo Host</p>
+          <input 
+            value={hostIdInput} 
+            onChange={e => setHostIdInput(e.target.value)} 
+            placeholder="Cole o código aqui" 
+            className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-6 text-center font-mono text-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all" 
+          />
+          <button 
+            onClick={handleJoin} 
+            disabled={!hostIdInput} 
+            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold py-4 rounded-xl text-lg shadow-lg transition-all active:scale-[0.98]"
+          >
+            Conectar
+          </button>
         </div>
       )}
     </CardWrapper>
@@ -266,19 +312,31 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   if (phase === Phase.SETUP) return (
     <CardWrapper>
       <div className="text-center">
-        <div className="bg-slate-900/50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 border border-slate-700">
+        <div className="bg-slate-900/50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 border border-slate-700 shadow-inner">
            <User className="w-10 h-10 text-indigo-400" />
         </div>
         <h2 className="text-2xl font-bold text-white mb-2">Sua Identidade</h2>
         <p className="text-slate-400 mb-6 text-sm">Escolha quem o oponente vai tentar adivinhar.</p>
         
         {!myCharacter ? (
-          <>
-            <input value={setupInput} onChange={e => setSetupInput(e.target.value)} placeholder="Ex: Batman" className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-4 text-center text-lg placeholder:text-slate-600" />
-            <button onClick={confirmMyCharacter} disabled={!setupInput.trim()} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl text-lg shadow-lg shadow-emerald-900/20 transition-all active:scale-[0.98]">Confirmar</button>
-          </>
+          <div className="space-y-4">
+            <input 
+              value={setupInput} 
+              onChange={e => setSetupInput(e.target.value)} 
+              placeholder="Ex: Homem Aranha" 
+              className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white text-center text-lg placeholder:text-slate-600 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all" 
+              autoFocus
+            />
+            <button 
+              onClick={confirmMyCharacter} 
+              disabled={!setupInput.trim()} 
+              className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold py-4 rounded-xl text-lg shadow-lg shadow-emerald-900/20 transition-all active:scale-[0.98]"
+            >
+              Confirmar
+            </button>
+          </div>
         ) : (
-          <div className="text-emerald-400 font-bold text-xl p-6 bg-emerald-900/20 rounded-xl mb-4 border border-emerald-500/50">
+          <div className="text-emerald-400 font-bold text-xl p-6 bg-emerald-900/20 rounded-xl mb-4 border border-emerald-500/50 animate-in zoom-in duration-300">
              {myCharacter}
           </div>
         )}
@@ -287,12 +345,16 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
           {!opponentCharacter ? (
             <div className="flex flex-col items-center gap-3 text-slate-500 text-sm">
               <div className="animate-spin w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full"></div>
-              Esperando oponente...
-              <button onClick={resendCharacter} className="text-xs text-indigo-400 underline p-2">Reenviar</button>
+              <span>Aguardando oponente escolher...</span>
+              {myCharacter && (
+                <button onClick={resendCharacter} className="text-xs text-indigo-400 hover:text-indigo-300 underline p-2 transition-colors">
+                  Reenviar minha escolha
+                </button>
+              )}
             </div>
           ) : (
-            <div className="flex items-center justify-center gap-2 text-emerald-500 font-bold bg-emerald-950/30 p-3 rounded-lg">
-              <Check size={20} /> Oponente pronto!
+            <div className="flex items-center justify-center gap-2 text-emerald-400 font-bold bg-emerald-950/40 p-3 rounded-lg border border-emerald-900/50 animate-in fade-in slide-in-from-bottom-2">
+              <Check size={20} /> Oponente está pronto!
             </div>
           )}
         </div>
@@ -313,7 +375,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             <h2 className="text-4xl font-black italic text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-amber-400 to-yellow-600 mb-2 tracking-tight">
               VITÓRIA!
             </h2>
-            <p className="text-slate-400 mb-8 font-medium">Você acertou!</p>
+            <p className="text-slate-400 mb-8 font-medium">Você descobriu a identidade secreta!</p>
             
             <div className="relative mb-10 group">
               <div className="absolute -inset-1 bg-gradient-to-r from-yellow-600 to-amber-600 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
@@ -333,11 +395,11 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             </div>
 
             <h2 className="text-3xl font-bold text-white mb-2">DERROTA</h2>
-            <p className="text-slate-400 mb-8">Ele descobriu antes de você.</p>
+            <p className="text-slate-400 mb-8">Ele descobriu quem era antes de você.</p>
             
             <div className="bg-slate-950/50 p-6 rounded-xl border border-slate-700 mb-10 shadow-inner">
                <p className="text-xs text-slate-500 uppercase tracking-[0.2em] mb-2 font-bold flex items-center justify-center gap-2">
-                 <Sparkles size={12} /> Oponente era
+                 <Sparkles size={12} /> O personagem dele era
                </p>
                <div className="text-2xl font-bold text-indigo-300 tracking-wide uppercase break-words">
                  {opponentCharacter}
