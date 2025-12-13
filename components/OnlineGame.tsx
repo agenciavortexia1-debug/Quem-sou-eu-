@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { peerService } from '../services/peerService';
 import { AnswerType, NetworkPacket, PacketType, ChatMessage } from '../types';
-import { ArrowLeft, Copy, Check, Send, AlertTriangle, User, RefreshCw, Trophy, Crown, RefreshCcw } from 'lucide-react';
+import { ArrowLeft, Copy, Check, Send, AlertTriangle, User, RefreshCw, Trophy, Crown, RefreshCcw, HelpCircle } from 'lucide-react';
 
 interface Props {
   isHost: boolean;
@@ -49,7 +49,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   }, [messages, pendingGuess]);
 
   // 2. Monitorar transição de SETUP para PLAYING
-  // Isso garante que assim que tivermos as duas infos, o jogo começa.
   useEffect(() => {
     if (phase === Phase.SETUP && myTargetCharacter && mySecretIdentity) {
       setPhase(Phase.PLAYING);
@@ -62,16 +61,10 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     handlePacketRef.current = (packet: NetworkPacket) => {
       switch (packet.type) {
         case PacketType.SETUP_CHARACTER:
-          // IMPORTANTE: Evitar loops e re-renderizações desnecessárias
           if (mySecretIdentity === packet.payload) return;
-
           console.log("Recebido personagem do oponente:", packet.payload);
           setMySecretIdentity(packet.payload);
           
-          // LÓGICA DE ECO/SYNC:
-          // Se eu já escolhi o personagem do meu oponente, mas acabei de receber o meu,
-          // reenvio o meu personagem para garantir que o oponente também tenha.
-          // Isso resolve o problema onde um lado fica "Carregando" porque perdeu o primeiro pacote.
           if (myTargetCharacter) {
              console.log("Reenviando meu personagem para sincronizar...");
              peerService.send(PacketType.SETUP_CHARACTER, myTargetCharacter);
@@ -85,6 +78,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             content: packet.payload,
             timestamp: Date.now()
           }]);
+          // Ao receber uma pergunta, não mudo meu turno ainda, preciso responder.
           break;
 
         case PacketType.ANSWER:
@@ -95,7 +89,16 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             answerType: packet.payload,
             timestamp: Date.now()
           }]);
-          setIsMyTurn(true);
+          
+          // LÓGICA DE TURNO (RECEBENDO RESPOSTA):
+          // Se eu perguntei e a resposta foi "NÃO" ou "PROVAVELMENTE NÃO", eu perco a vez.
+          const isNegativeReceive = packet.payload === AnswerType.NO || packet.payload === AnswerType.PROBABLY_NOT;
+          
+          if (isNegativeReceive) {
+            setIsMyTurn(false); // Passa a vez para o oponente
+          } else {
+            setIsMyTurn(true); // Mantenho a vez (Sim/Talvez/Não sei)
+          }
           break;
 
         case PacketType.GUESS:
@@ -114,6 +117,8 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             setWinner('opponent');
             setPhase(Phase.GAME_OVER);
           } else {
+            // Se o oponente errou o chute, a vez passa para MIM?
+            // Sim, se ele errou, ele perde a vez.
             setIsMyTurn(true);
           }
           break;
@@ -123,7 +128,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
           break;
       }
     };
-  }); // Sem array de dependências, atualiza a cada render
+  }); 
 
   // 4. Inicializar PeerJS (Apenas uma vez)
   useEffect(() => {
@@ -139,10 +144,9 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
 
     peerService.onConnectCallback = () => {
       setPhase(Phase.SETUP);
-      setIsMyTurn(isHost);
+      setIsMyTurn(isHost); // Host começa perguntando
     };
 
-    // Aqui usamos o Ref, que sempre terá a versão mais nova da função handlePacketRef.current
     peerService.onDataCallback = (packet: NetworkPacket) => {
       handlePacketRef.current(packet);
     };
@@ -169,8 +173,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     if (!setupInput.trim()) return;
     setMyTargetCharacter(setupInput);
     peerService.send(PacketType.SETUP_CHARACTER, setupInput);
-    
-    // Se ainda não sei quem eu sou, tenho que esperar o oponente.
     if (!mySecretIdentity) {
       setIsWaitingForOpponentSetup(true);
     }
@@ -178,7 +180,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
 
   const handleResendSetup = () => {
     if (myTargetCharacter) {
-      // Botão de emergência para destravar o jogo
       peerService.send(PacketType.SETUP_CHARACTER, myTargetCharacter);
     }
   };
@@ -194,6 +195,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
         content: `Eu chuto que sou: ${currentInput}`,
         timestamp: Date.now()
       }]);
+      // Quando eu chuto, eu espero o resultado, então perco o controle momentaneamente
       setIsMyTurn(false);
     } else {
       peerService.send(PacketType.QUESTION, currentInput);
@@ -203,6 +205,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
         content: currentInput,
         timestamp: Date.now()
       }]);
+      // Quando pergunto, perco a vez momentaneamente enquanto espero a resposta
       setIsMyTurn(false);
     }
     setCurrentInput('');
@@ -218,16 +221,26 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
       answerType: answer,
       timestamp: Date.now()
     }]);
-    setIsMyTurn(false);
+
+    // LÓGICA DE TURNO (ENVIANDO RESPOSTA):
+    // Se eu respondi "NÃO" ou "PROVAVELMENTE NÃO", eu ganho a vez de perguntar.
+    const isNegativeResponse = answer === AnswerType.NO || answer === AnswerType.PROBABLY_NOT;
+
+    if (isNegativeResponse) {
+      setIsMyTurn(true); // Ganho a vez!
+    } else {
+      setIsMyTurn(false); // Continuo apenas respondendo
+    }
   };
 
   const resolveGuess = (correct: boolean) => {
     peerService.send(PacketType.GUESS_RESULT, { correct, guess: pendingGuess });
     setPendingGuess(null);
     if (correct) {
-      setWinner('opponent'); // Eu confirmei que eles acertaram, então eles ganham.
+      setWinner('opponent');
       setPhase(Phase.GAME_OVER);
     } else {
+      // Se eu disse que ele errou, eu ganho a vez.
       setIsMyTurn(true);
     }
   };
@@ -348,7 +361,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             <div className="mt-4 flex flex-col items-center gap-4">
               <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
               
-              {/* Botão de Resgate para destravar */}
               <button 
                 onClick={handleResendSetup}
                 className="mt-2 text-xs text-indigo-400 hover:text-white flex items-center gap-1 border border-indigo-500/30 px-3 py-1 rounded hover:bg-indigo-500/20 transition-colors"
@@ -396,30 +408,40 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   return (
     <div className="flex flex-col h-[calc(100vh-80px)] max-w-4xl mx-auto w-full bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-2xl relative">
       
-      {/* Header Info */}
-      <div className="bg-slate-800 px-4 py-3 flex items-center justify-between border-b border-slate-700 shrink-0">
-         <div className="flex flex-col">
-            <span className="text-xs text-slate-500 uppercase tracking-wider font-bold">Oponente é:</span>
-            <span className="text-indigo-400 font-bold text-lg truncate max-w-[150px] md:max-w-xs" title={myTargetCharacter}>
+      {/* Header Info - MODIFICADO PARA EVITAR CONFUSÃO */}
+      <div className="bg-slate-800 px-4 py-3 grid grid-cols-3 items-center border-b border-slate-700 shrink-0 gap-2">
+         {/* Quem eu sou? */}
+         <div className="flex flex-col items-start bg-slate-900/50 p-2 rounded-lg border border-slate-700/50">
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold flex items-center gap-1">
+              <HelpCircle size={10} /> Quem sou eu?
+            </span>
+            <span className="text-slate-300 font-mono text-lg font-bold">???</span>
+         </div>
+
+         {/* Status do Turno */}
+         <div className="flex justify-center">
+             <div className={`px-4 py-1 rounded-full text-xs md:text-sm font-bold border whitespace-nowrap ${isMyTurn ? 'bg-emerald-900/50 border-emerald-500 text-emerald-400 animate-pulse' : 'bg-rose-900/50 border-rose-500 text-rose-400'}`}>
+                {isMyTurn ? 'Sua Vez de Perguntar' : 'Vez do Oponente'}
+             </div>
+         </div>
+         
+         {/* Quem o oponente é (Alvo) */}
+         <div className="flex flex-col items-end bg-slate-900/50 p-2 rounded-lg border border-slate-700/50">
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold text-right">
+              Oponente (Eles são):
+            </span>
+            <span className="text-indigo-400 font-bold text-sm md:text-base truncate max-w-[100px] md:max-w-[150px]" title={myTargetCharacter}>
                {myTargetCharacter}
             </span>
          </div>
-         
-         <div className={`px-4 py-1 rounded-full text-sm font-bold border ${isMyTurn ? 'bg-emerald-900/50 border-emerald-500 text-emerald-400 animate-pulse' : 'bg-rose-900/50 border-rose-500 text-rose-400'}`}>
-            {isMyTurn ? 'Sua Vez' : 'Vez do Oponente'}
-         </div>
-         
-         <button onClick={onBack} className="text-slate-500 hover:text-white p-2">
-            <ArrowLeft size={20} />
-         </button>
       </div>
 
       {/* Main Chat Area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-900/50">
          {/* System Welcome */}
          <div className="text-center my-4">
-            <span className="bg-slate-800 text-slate-400 text-xs px-3 py-1 rounded-full">
-              Jogo iniciado! Descubra quem você é fazendo perguntas de Sim/Não.
+            <span className="bg-slate-800 text-slate-400 text-xs px-3 py-1 rounded-full border border-slate-700">
+              Jogo iniciado! Faça perguntas de Sim/Não. Se a resposta for "Não", a vez passa.
             </span>
          </div>
 
@@ -456,24 +478,31 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
                </div>
             </div>
          ) : !isMyTurn ? (
-            // Receiving opponent question
+            // Receiving opponent question OR waiting for them to play
             messages.length > 0 && messages[messages.length - 1].sender === 'opponent' && messages[messages.length - 1].type === 'text' ? (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                   {Object.values(AnswerType).map(ans => (
-                      <button 
-                        key={ans}
-                        onClick={() => sendAnswer(ans)}
-                        className="bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-xl text-sm font-medium transition-colors"
-                      >
-                        {ans}
-                      </button>
-                   ))}
+                <div className="flex flex-col gap-2">
+                   <p className="text-xs text-slate-400 text-center mb-1">Responda a pergunta do oponente:</p>
+                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      {Object.values(AnswerType).map(ans => (
+                          <button 
+                            key={ans}
+                            onClick={() => sendAnswer(ans)}
+                            className={`py-3 rounded-xl text-sm font-medium transition-colors border ${
+                              (ans === AnswerType.NO || ans === AnswerType.PROBABLY_NOT)
+                              ? 'bg-rose-900/30 border-rose-700/50 hover:bg-rose-800 text-rose-100' 
+                              : 'bg-slate-700 border-slate-600 hover:bg-slate-600 text-white'
+                            }`}
+                          >
+                            {ans}
+                          </button>
+                      ))}
+                   </div>
                 </div>
             ) : (
                 // Just waiting
                 <div className="text-center text-slate-500 py-4 flex items-center justify-center gap-2">
                    <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce"></div>
-                   Aguardando oponente...
+                   Aguardando oponente perguntar ou chutar...
                 </div>
             )
          ) : (
