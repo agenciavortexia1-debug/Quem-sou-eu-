@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { peerService } from '../services/peerService';
 import { AnswerType, NetworkPacket, PacketType, ChatMessage } from '../types';
-import { ArrowLeft, Copy, Check, Send, AlertTriangle, User, RefreshCw, Trophy, Crown, RefreshCcw, HelpCircle } from 'lucide-react';
+import { ArrowLeft, Copy, Send, AlertTriangle, User, RefreshCw, Trophy, Crown, RefreshCcw, HelpCircle, Eye, EyeOff, ShieldQuestion, Check, Sparkles } from 'lucide-react';
 
 interface Props {
   isHost: boolean;
@@ -16,69 +16,78 @@ enum Phase {
   GAME_OVER = 'GAME_OVER'
 }
 
+const normalizeString = (str: string) => {
+  return str
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+};
+
 const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
+  // --- CONNECTION STATE ---
   const [phase, setPhase] = useState<Phase>(Phase.CONNECTING);
   const [myId, setMyId] = useState<string>('');
   const [hostIdInput, setHostIdInput] = useState('');
   const [connectionError, setConnectionError] = useState('');
+
+  // --- GAME LOGIC STATE ---
+  const [myCharacter, setMyCharacter] = useState('');           // Quem EU sou (Eu defini)
+  const [opponentCharacter, setOpponentCharacter] = useState(''); // Quem ELE é (Ele definiu, fica oculto pra mim)
   
-  // Game State
-  const [myTargetCharacter, setMyTargetCharacter] = useState(''); // Quem eu defini (personagem do oponente)
-  const [mySecretIdentity, setMySecretIdentity] = useState('');   // Quem eu sou (definido pelo oponente)
   const [setupInput, setSetupInput] = useState('');
-  const [isWaitingForOpponentSetup, setIsWaitingForOpponentSetup] = useState(false);
   
+  // Chat & Turnos
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [currentInput, setCurrentInput] = useState('');
-  const [isMyTurn, setIsMyTurn] = useState(false);
-  const [pendingGuess, setPendingGuess] = useState<string | null>(null);
-  const [isGuessingMode, setIsGuessingMode] = useState(false);
-
-  const [winner, setWinner] = useState<'me' | 'opponent' | null>(null);
+  const [isMyTurn, setIsMyTurn] = useState(false); // Controle visual de turno
+  const [gameResult, setGameResult] = useState<'VICTORY' | 'DEFEAT' | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Ref para guardar o manipulador de pacotes atualizado (Evita Stale Closure)
   const handlePacketRef = useRef<(packet: NetworkPacket) => void>(() => {});
 
-  // 1. Auto-scroll chat
+  // Auto-scroll
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, pendingGuess]);
+  }, [messages]);
 
-  // 2. Monitorar transição de SETUP para PLAYING
+  // Detector de Início de Jogo
   useEffect(() => {
-    if (phase === Phase.SETUP && myTargetCharacter && mySecretIdentity) {
+    if (phase === Phase.SETUP && myCharacter && opponentCharacter) {
       setPhase(Phase.PLAYING);
-      setIsWaitingForOpponentSetup(false);
+      // Host começa perguntando
+      setIsMyTurn(isHost);
     }
-  }, [phase, myTargetCharacter, mySecretIdentity]);
+  }, [phase, myCharacter, opponentCharacter, isHost]);
 
-  // 3. Atualizar o Ref do manipulador toda vez que o estado mudar
+  // --- PACKET HANDLER ---
   useEffect(() => {
     handlePacketRef.current = (packet: NetworkPacket) => {
       switch (packet.type) {
-        case PacketType.SETUP_CHARACTER:
-          if (mySecretIdentity === packet.payload) return;
-          console.log("Recebido personagem do oponente:", packet.payload);
-          setMySecretIdentity(packet.payload);
+        case PacketType.EXCHANGE_CHARACTER:
+          // Recebi o personagem do oponente.
+          // Guardo no estado para validar vitórias, mas NÃO mostro na UI (fica oculto visualmente).
+          if (opponentCharacter === packet.payload) return;
+          console.log("Personagem do oponente recebido para validação:", packet.payload);
+          setOpponentCharacter(packet.payload);
           
-          if (myTargetCharacter) {
-             console.log("Reenviando meu personagem para sincronizar...");
-             peerService.send(PacketType.SETUP_CHARACTER, myTargetCharacter);
+          // Se eu já escolhi o meu, reenvio para garantir sincronia (Handshake)
+          if (myCharacter) {
+             peerService.send(PacketType.EXCHANGE_CHARACTER, myCharacter);
           }
           break;
-        
-        case PacketType.QUESTION:
+
+        case PacketType.MESSAGE:
           setMessages(prev => [...prev, {
             sender: 'opponent',
             type: 'text',
             content: packet.payload,
             timestamp: Date.now()
           }]);
-          // Ao receber uma pergunta, não mudo meu turno ainda, preciso responder.
+          // Se recebi uma pergunta, agora tenho que responder.
+          // Turno visual muda para mim (responder).
           break;
 
         case PacketType.ANSWER:
@@ -86,51 +95,33 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             sender: 'opponent',
             type: 'answer',
             content: packet.payload,
-            answerType: packet.payload,
             timestamp: Date.now()
           }]);
           
-          // LÓGICA DE TURNO (RECEBENDO RESPOSTA):
-          // Se eu perguntei e a resposta foi "NÃO" ou "PROVAVELMENTE NÃO", eu perco a vez.
-          const isNegativeReceive = packet.payload === AnswerType.NO || packet.payload === AnswerType.PROBABLY_NOT;
-          
-          if (isNegativeReceive) {
-            setIsMyTurn(false); // Passa a vez para o oponente
+          // Lógica de Turno Simplificada:
+          // Se recebi "Não" ou "Provavelmente não", perco a vez.
+          const isNegative = packet.payload === AnswerType.NO || packet.payload === AnswerType.PROBABLY_NOT;
+          if (isNegative) {
+            setIsMyTurn(false); 
           } else {
-            setIsMyTurn(true); // Mantenho a vez (Sim/Talvez/Não sei)
-          }
-          break;
-
-        case PacketType.GUESS:
-          setPendingGuess(packet.payload);
-          break;
-
-        case PacketType.GUESS_RESULT:
-          const { correct, guess } = packet.payload;
-          setMessages(prev => [...prev, {
-            sender: 'opponent',
-            type: 'guess',
-            content: `Chutou: ${guess} - ${correct ? 'CORRETO!' : 'ERROU!'}`,
-            timestamp: Date.now()
-          }]);
-          if (correct) {
-            setWinner('opponent');
-            setPhase(Phase.GAME_OVER);
-          } else {
-            // Se o oponente errou o chute, a vez passa para MIM?
-            // Sim, se ele errou, ele perde a vez.
             setIsMyTurn(true);
           }
           break;
-        
+
+        case PacketType.GAME_WON:
+          // Oponente disse que ganhou (ele acertou meu personagem). Logo, eu perdi.
+          setGameResult('DEFEAT');
+          setPhase(Phase.GAME_OVER);
+          break;
+
         case PacketType.RESTART:
-          resetGame(false);
+          fullReset(false);
           break;
       }
     };
-  }); 
+  });
 
-  // 4. Inicializar PeerJS (Apenas uma vez)
+  // --- PEER INITIALIZATION ---
   useEffect(() => {
     const init = async () => {
       try {
@@ -138,409 +129,307 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
         setMyId(id);
         setPhase(Phase.LOBBY);
       } catch (err) {
-        setConnectionError('Falha ao conectar ao servidor de rede.');
+        setConnectionError('Erro na conexão P2P.');
       }
     };
 
     peerService.onConnectCallback = () => {
       setPhase(Phase.SETUP);
-      setIsMyTurn(isHost); // Host começa perguntando
     };
 
-    peerService.onDataCallback = (packet: NetworkPacket) => {
-      handlePacketRef.current(packet);
-    };
+    peerService.onDataCallback = (packet) => handlePacketRef.current(packet);
 
     peerService.onCloseCallback = () => {
-      setConnectionError('Oponente desconectado.');
+      setConnectionError('Oponente desconectou.');
       setPhase(Phase.CONNECTING);
     };
 
     init();
-
-    return () => {
-      peerService.destroy();
-    };
+    return () => peerService.destroy();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHost]);
+  }, []);
+
+  // --- ACTIONS ---
 
   const handleJoin = () => {
     if (!hostIdInput) return;
     peerService.connect(hostIdInput);
   };
 
-  const submitCharacter = () => {
+  const confirmMyCharacter = () => {
     if (!setupInput.trim()) return;
-    setMyTargetCharacter(setupInput);
-    peerService.send(PacketType.SETUP_CHARACTER, setupInput);
-    if (!mySecretIdentity) {
-      setIsWaitingForOpponentSetup(true);
-    }
+    setMyCharacter(setupInput);
+    // Envio meu personagem para o oponente guardar (para validação dele)
+    peerService.send(PacketType.EXCHANGE_CHARACTER, setupInput);
   };
 
-  const handleResendSetup = () => {
-    if (myTargetCharacter) {
-      peerService.send(PacketType.SETUP_CHARACTER, myTargetCharacter);
-    }
+  const resendCharacter = () => {
+    if (myCharacter) peerService.send(PacketType.EXCHANGE_CHARACTER, myCharacter);
   };
 
-  const sendQuestion = () => {
+  const sendMessage = () => {
     if (!currentInput.trim()) return;
-    
-    if (isGuessingMode) {
-      peerService.send(PacketType.GUESS, currentInput);
-      setMessages(prev => [...prev, {
-        sender: 'me',
-        type: 'guess',
-        content: `Eu chuto que sou: ${currentInput}`,
-        timestamp: Date.now()
-      }]);
-      // Quando eu chuto, eu espero o resultado, então perco o controle momentaneamente
-      setIsMyTurn(false);
-    } else {
-      peerService.send(PacketType.QUESTION, currentInput);
-      setMessages(prev => [...prev, {
-        sender: 'me',
-        type: 'text',
-        content: currentInput,
-        timestamp: Date.now()
-      }]);
-      // Quando pergunto, perco a vez momentaneamente enquanto espero a resposta
-      setIsMyTurn(false);
+
+    // --- LÓGICA DE VALIDAÇÃO AUTOMÁTICA DE VITÓRIA ---
+    // Normalizamos ambas as strings (remove acentos, espaços, minúsculas)
+    const guess = normalizeString(currentInput);
+    const target = normalizeString(opponentCharacter);
+
+    // Se o que eu digitei bate com o personagem oculto do oponente:
+    if (opponentCharacter && guess === target) {
+      // 1. Defino minha vitória localmente
+      setGameResult('VICTORY');
+      setPhase(Phase.GAME_OVER);
+      
+      // 2. Aviso o oponente que o jogo acabou (ele perdeu)
+      peerService.send(PacketType.GAME_WON, null); 
+      return;
     }
+
+    // Se não for vitória, envia mensagem normal
+    peerService.send(PacketType.MESSAGE, currentInput);
+    setMessages(prev => [...prev, {
+      sender: 'me',
+      type: 'text',
+      content: currentInput,
+      timestamp: Date.now()
+    }]);
+    
+    // Perco a vez de interagir enquanto espero resposta
+    setIsMyTurn(false);
     setCurrentInput('');
-    setIsGuessingMode(false);
   };
 
-  const sendAnswer = (answer: AnswerType) => {
-    peerService.send(PacketType.ANSWER, answer);
+  const sendAnswer = (ans: AnswerType) => {
+    peerService.send(PacketType.ANSWER, ans);
     setMessages(prev => [...prev, {
       sender: 'me',
       type: 'answer',
-      content: answer,
-      answerType: answer,
+      content: ans,
       timestamp: Date.now()
     }]);
 
-    // LÓGICA DE TURNO (ENVIANDO RESPOSTA):
-    // Se eu respondi "NÃO" ou "PROVAVELMENTE NÃO", eu ganho a vez de perguntar.
-    const isNegativeResponse = answer === AnswerType.NO || answer === AnswerType.PROBABLY_NOT;
-
-    if (isNegativeResponse) {
-      setIsMyTurn(true); // Ganho a vez!
-    } else {
-      setIsMyTurn(false); // Continuo apenas respondendo
-    }
-  };
-
-  const resolveGuess = (correct: boolean) => {
-    peerService.send(PacketType.GUESS_RESULT, { correct, guess: pendingGuess });
-    setPendingGuess(null);
-    if (correct) {
-      setWinner('opponent');
-      setPhase(Phase.GAME_OVER);
-    } else {
-      // Se eu disse que ele errou, eu ganho a vez.
+    // Se respondi "Não", ganho a vez de perguntar.
+    const isNegative = ans === AnswerType.NO || ans === AnswerType.PROBABLY_NOT;
+    if (isNegative) {
       setIsMyTurn(true);
+    } else {
+      setIsMyTurn(false); // Continuo respondendo
     }
   };
 
-  const resetGame = (sendSignal: boolean) => {
+  const fullReset = (sendSignal: boolean) => {
     if (sendSignal) peerService.send(PacketType.RESTART);
-    setMessages([]);
-    setMyTargetCharacter('');
-    setMySecretIdentity('');
+    setMyCharacter('');
+    setOpponentCharacter('');
     setSetupInput('');
-    setIsWaitingForOpponentSetup(false);
-    setWinner(null);
+    setMessages([]);
+    setGameResult(null);
     setPhase(Phase.SETUP);
     setIsMyTurn(isHost);
   };
 
-  // --- RENDERERS ---
+  // --- RENDER ---
 
-  if (connectionError) {
-    return (
-      <div className="flex flex-col items-center justify-center h-96 p-6 text-center">
-        <AlertTriangle className="w-16 h-16 text-red-500 mb-4" />
-        <h2 className="text-xl font-bold text-white mb-2">Erro de Conexão</h2>
-        <p className="text-slate-400 mb-6">{connectionError}</p>
-        <button onClick={onBack} className="px-6 py-2 bg-slate-700 rounded-lg hover:bg-slate-600">Voltar</button>
-      </div>
-    );
-  }
+  if (connectionError) return (
+    <div className="flex flex-col items-center justify-center h-96 p-6 text-center">
+      <AlertTriangle className="w-16 h-16 text-red-500 mb-4" />
+      <p className="text-white mb-4">{connectionError}</p>
+      <button onClick={onBack} className="bg-slate-700 px-4 py-2 rounded">Voltar</button>
+    </div>
+  );
 
-  if (phase === Phase.CONNECTING) {
-    return (
-      <div className="flex flex-col items-center justify-center h-96">
-        <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-        <p className="text-indigo-300">Conectando ao servidor...</p>
-      </div>
-    );
-  }
+  if (phase === Phase.CONNECTING) return (
+    <div className="flex flex-col items-center justify-center h-96 text-indigo-400">
+      <div className="animate-spin w-8 h-8 border-4 border-current border-t-transparent rounded-full mb-4"></div>
+      Carregando...
+    </div>
+  );
 
-  if (phase === Phase.LOBBY) {
-    return (
-      <div className="max-w-md mx-auto w-full bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl">
-        <button onClick={onBack} className="mb-6 text-slate-400 hover:text-white flex items-center gap-2 text-sm"><ArrowLeft size={16}/> Voltar</button>
-        
-        {isHost ? (
-          <div className="text-center">
-             <h2 className="text-2xl font-bold text-white mb-2">Sua Sala</h2>
-             <p className="text-slate-400 mb-6">Compartilhe este código com seu amigo:</p>
-             
-             <div className="flex items-center gap-2 bg-slate-950 p-4 rounded-xl border border-slate-700 mb-6">
-                <code className="flex-1 text-xl font-mono text-indigo-400 tracking-wider">{myId}</code>
-                <button 
-                  onClick={() => navigator.clipboard.writeText(myId)}
-                  className="p-2 hover:bg-slate-800 rounded-lg transition-colors"
-                >
-                  <Copy size={20} className="text-slate-400" />
-                </button>
-             </div>
-             
-             <div className="flex items-center justify-center gap-3 text-slate-500 animate-pulse">
-                <RefreshCw className="animate-spin" size={20} /> Aguardando oponente...
-             </div>
+  if (phase === Phase.LOBBY) return (
+    <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl">
+      <button onClick={onBack} className="mb-6 text-slate-400 flex items-center gap-2"><ArrowLeft size={16}/> Voltar</button>
+      {isHost ? (
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-white mb-2">Código da Sala</h2>
+          <div className="flex bg-slate-950 p-4 rounded-xl border border-slate-700 mb-6 gap-2">
+            <code className="flex-1 text-xl font-mono text-indigo-400">{myId}</code>
+            <button onClick={() => navigator.clipboard.writeText(myId)}><Copy className="text-slate-400" /></button>
+          </div>
+          <div className="flex justify-center gap-2 text-slate-500 animate-pulse"><RefreshCw className="animate-spin" /> Esperando Oponente...</div>
+        </div>
+      ) : (
+        <div>
+          <h2 className="text-2xl font-bold text-white mb-4">Entrar</h2>
+          <input value={hostIdInput} onChange={e => setHostIdInput(e.target.value)} placeholder="Cole o código aqui" className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-4 text-center font-mono" />
+          <button onClick={handleJoin} disabled={!hostIdInput} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl">Conectar</button>
+        </div>
+      )}
+    </div>
+  );
+
+  if (phase === Phase.SETUP) return (
+    <div className="max-w-lg mx-auto bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl text-center">
+      <User className="w-16 h-16 text-indigo-400 mx-auto mb-4" />
+      <h2 className="text-2xl font-bold text-white mb-2">Quem você vai ser?</h2>
+      <p className="text-slate-400 mb-6">Escolha o personagem que o oponente terá que adivinhar.</p>
+      
+      {!myCharacter ? (
+        <>
+          <input value={setupInput} onChange={e => setSetupInput(e.target.value)} placeholder="Ex: Homem Aranha" className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-4 text-center text-lg" />
+          <button onClick={confirmMyCharacter} disabled={!setupInput.trim()} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl">Confirmar</button>
+        </>
+      ) : (
+        <div className="text-emerald-400 font-bold text-xl p-4 bg-emerald-900/20 rounded-xl mb-4 border border-emerald-500/50">
+          Você é: {myCharacter}
+        </div>
+      )}
+
+      <div className="mt-6 border-t border-slate-700 pt-6">
+        {!opponentCharacter ? (
+          <div className="flex flex-col items-center gap-2 text-slate-500">
+            <div className="animate-spin w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full"></div>
+            Aguardando oponente escolher...
+            <button onClick={resendCharacter} className="text-xs text-indigo-400 underline">Reenviar meu status</button>
           </div>
         ) : (
-          <div>
-            <h2 className="text-2xl font-bold text-white mb-2">Entrar na Sala</h2>
-            <p className="text-slate-400 mb-6">Cole o código do seu amigo abaixo:</p>
-            
-            <input 
-              value={hostIdInput}
-              onChange={e => setHostIdInput(e.target.value)}
-              placeholder="Código da Sala"
-              className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-4 focus:outline-none focus:border-indigo-500 font-mono text-center tracking-wider"
-            />
-            
-            <button 
-              onClick={handleJoin}
-              disabled={!hostIdInput}
-              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl transition-all"
-            >
-              Entrar
-            </button>
+          <div className="flex items-center justify-center gap-2 text-emerald-500 font-bold">
+            <Check size={20} /> Oponente está pronto!
           </div>
         )}
       </div>
-    );
-  }
+    </div>
+  );
 
-  if (phase === Phase.SETUP) {
-    return (
-      <div className="max-w-lg mx-auto w-full bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl text-center">
-         <User className="w-16 h-16 text-indigo-400 mx-auto mb-4" />
-         <h2 className="text-2xl font-bold text-white mb-2">Defina o Personagem</h2>
-         <p className="text-slate-400 mb-6">
-           {isWaitingForOpponentSetup 
-             ? "Aguardando o oponente escolher seu personagem..." 
-             : "Escolha quem seu oponente será. Seja criativo!"}
-         </p>
-
-         {!isWaitingForOpponentSetup && (
-           <>
-            <input 
-              value={setupInput}
-              onChange={e => setSetupInput(e.target.value)}
-              placeholder="Ex: Batman, Sua Sogra, Bob Esponja..."
-              className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-4 focus:outline-none focus:border-indigo-500 text-center text-lg"
-            />
-            <button 
-              onClick={submitCharacter}
-              disabled={!setupInput.trim()}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold py-4 rounded-xl transition-all"
-            >
-              Confirmar e Jogar
-            </button>
-           </>
-         )}
-         
-         {isWaitingForOpponentSetup && (
-            <div className="mt-4 flex flex-col items-center gap-4">
-              <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-              
-              <button 
-                onClick={handleResendSetup}
-                className="mt-2 text-xs text-indigo-400 hover:text-white flex items-center gap-1 border border-indigo-500/30 px-3 py-1 rounded hover:bg-indigo-500/20 transition-colors"
-                title="Clique aqui se estiver esperando há muito tempo"
-              >
-                <RefreshCcw size={12} />
-                Reenviar Informações
-              </button>
+  if (phase === Phase.GAME_OVER) return (
+    <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-2xl text-center animate-in zoom-in duration-500">
+      {gameResult === 'VICTORY' ? (
+        <>
+          <div className="relative inline-block">
+             <div className="absolute inset-0 bg-yellow-500 blur-2xl opacity-20 animate-pulse"></div>
+             <Trophy className="relative z-10 w-24 h-24 text-yellow-400 mx-auto mb-6 drop-shadow-[0_0_15px_rgba(250,204,21,0.5)]" />
+          </div>
+          
+          <h2 className="text-4xl font-black italic text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-amber-400 to-yellow-600 mb-2 tracking-tight">
+            VITÓRIA!
+          </h2>
+          <p className="text-slate-400 mb-8 font-medium">Você descobriu a identidade secreta:</p>
+          
+          <div className="relative mb-10 group">
+            <div className="absolute -inset-1 bg-gradient-to-r from-yellow-600 to-amber-600 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
+            <div className="relative bg-slate-900 border border-yellow-500/30 p-6 rounded-xl shadow-xl">
+               <p className="text-xs text-yellow-500/70 uppercase tracking-[0.2em] mb-2 font-bold">Oponente era</p>
+               <div className="text-4xl md:text-5xl font-black text-yellow-100 tracking-wide uppercase break-words drop-shadow-md">
+                 {opponentCharacter}
+               </div>
             </div>
-         )}
-      </div>
-    );
-  }
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="relative inline-block">
+             <div className="absolute inset-0 bg-rose-500 blur-2xl opacity-10"></div>
+             <Crown className="relative z-10 w-24 h-24 text-rose-400 mx-auto mb-6" />
+          </div>
 
-  if (phase === Phase.GAME_OVER) {
-     const iWon = winner === 'me';
-     return (
-        <div className="max-w-md mx-auto w-full bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl text-center animate-in zoom-in">
-           {iWon ? (
-             <>
-               <Trophy className="w-20 h-20 text-yellow-400 mx-auto mb-4 animate-bounce" />
-               <h2 className="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-amber-600 mb-4">Você Venceu!</h2>
-               <p className="text-slate-300 text-lg mb-8">Você descobriu que era <strong>{mySecretIdentity}</strong>!</p>
-             </>
-           ) : (
-             <>
-               <Crown className="w-20 h-20 text-rose-400 mx-auto mb-4" />
-               <h2 className="text-3xl font-bold text-white mb-4">Seu Oponente Venceu!</h2>
-               <p className="text-slate-400 text-lg mb-8">Ele descobriu que era <strong>{myTargetCharacter}</strong>.</p>
-             </>
-           )}
-           
-           <button 
-             onClick={() => resetGame(true)}
-             className="px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full font-bold flex items-center justify-center gap-2 mx-auto transition-all hover:scale-105"
-           >
-             <RefreshCw size={20} /> Jogar Novamente
-           </button>
-        </div>
-     );
-  }
-
-  // --- PLAYING PHASE ---
-  
-  return (
-    <div className="flex flex-col h-[calc(100vh-80px)] max-w-4xl mx-auto w-full bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-2xl relative">
-      
-      {/* Header Info - MODIFICADO PARA EVITAR CONFUSÃO */}
-      <div className="bg-slate-800 px-4 py-3 grid grid-cols-3 items-center border-b border-slate-700 shrink-0 gap-2">
-         {/* Quem eu sou? */}
-         <div className="flex flex-col items-start bg-slate-900/50 p-2 rounded-lg border border-slate-700/50">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold flex items-center gap-1">
-              <HelpCircle size={10} /> Quem sou eu?
-            </span>
-            <span className="text-slate-300 font-mono text-lg font-bold">???</span>
-         </div>
-
-         {/* Status do Turno */}
-         <div className="flex justify-center">
-             <div className={`px-4 py-1 rounded-full text-xs md:text-sm font-bold border whitespace-nowrap ${isMyTurn ? 'bg-emerald-900/50 border-emerald-500 text-emerald-400 animate-pulse' : 'bg-rose-900/50 border-rose-500 text-rose-400'}`}>
-                {isMyTurn ? 'Sua Vez de Perguntar' : 'Vez do Oponente'}
+          <h2 className="text-3xl font-bold text-white mb-2">DERROTA</h2>
+          <p className="text-slate-400 mb-8">Ele descobriu quem era antes de você.</p>
+          
+          <div className="bg-slate-950/50 p-6 rounded-xl border border-slate-700 mb-10 shadow-inner">
+             <p className="text-xs text-slate-500 uppercase tracking-[0.2em] mb-2 font-bold flex items-center justify-center gap-2">
+               <Sparkles size={12} /> O personagem dele era
+             </p>
+             <div className="text-3xl md:text-4xl font-bold text-indigo-300 tracking-wide uppercase break-words">
+               {opponentCharacter}
              </div>
-         </div>
-         
-         {/* Quem o oponente é (Alvo) */}
-         <div className="flex flex-col items-end bg-slate-900/50 p-2 rounded-lg border border-slate-700/50">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold text-right">
-              Oponente (Eles são):
-            </span>
-            <span className="text-indigo-400 font-bold text-sm md:text-base truncate max-w-[100px] md:max-w-[150px]" title={myTargetCharacter}>
-               {myTargetCharacter}
-            </span>
-         </div>
+          </div>
+        </>
+      )}
+      <button 
+        onClick={() => fullReset(true)} 
+        className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 hover:scale-[1.02] active:scale-[0.98] text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-900/20"
+      >
+        <RefreshCw size={20} /> 
+        Jogar Novamente
+      </button>
+    </div>
+  );
+
+  // --- PLAYING ---
+  return (
+    <div className="flex flex-col h-[calc(100vh-80px)] max-w-4xl mx-auto w-full bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-2xl">
+      {/* HEADER */}
+      <div className="bg-slate-800 p-3 grid grid-cols-3 items-center border-b border-slate-700 shrink-0">
+        <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-700/50">
+          <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Você é</p>
+          <p className="text-emerald-400 font-bold truncate max-w-[120px]" title={myCharacter}>{myCharacter}</p>
+        </div>
+
+        <div className="text-center">
+          <div className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${isMyTurn ? 'bg-emerald-900/30 border-emerald-500 text-emerald-400' : 'bg-rose-900/30 border-rose-500 text-rose-400'}`}>
+            {isMyTurn ? 'Sua Vez' : 'Vez do Oponente'}
+          </div>
+        </div>
+
+        <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-700/50 text-right">
+          <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Oponente é</p>
+          <p className="text-slate-500 font-mono tracking-widest text-lg leading-none">*****</p>
+        </div>
       </div>
 
-      {/* Main Chat Area */}
+      {/* CHAT */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-900/50">
-         {/* System Welcome */}
-         <div className="text-center my-4">
-            <span className="bg-slate-800 text-slate-400 text-xs px-3 py-1 rounded-full border border-slate-700">
-              Jogo iniciado! Faça perguntas de Sim/Não. Se a resposta for "Não", a vez passa.
-            </span>
-         </div>
-
-         {messages.map((msg, i) => (
-           <div key={i} className={`flex flex-col ${msg.sender === 'me' ? 'items-end' : 'items-start'}`}>
-              <div 
-                className={`max-w-[85%] rounded-2xl px-5 py-3 text-sm leading-relaxed shadow-sm ${
-                   msg.sender === 'me' 
-                   ? 'bg-indigo-600 text-white rounded-tr-none' 
-                   : 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700'
-                } ${msg.type === 'guess' ? 'border-2 border-yellow-500/50' : ''}`}
-              >
-                 {msg.type === 'guess' && <span className="block text-xs opacity-70 mb-1 font-bold uppercase">Tentativa de Chute</span>}
-                 {msg.content}
-              </div>
-           </div>
-         ))}
+        <p className="text-center text-xs text-slate-500 py-2 bg-slate-800/50 rounded-full mx-auto w-fit px-4">
+          Para vencer, digite o <strong>nome do personagem</strong> no chat!
+        </p>
+        
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex flex-col ${msg.sender === 'me' ? 'items-end' : 'items-start'}`}>
+            <div className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
+              msg.sender === 'me' 
+                ? (msg.type === 'answer' ? 'bg-indigo-900 text-indigo-100 border border-indigo-700' : 'bg-indigo-600 text-white') 
+                : (msg.type === 'answer' ? 'bg-slate-800 text-slate-300 border border-slate-700' : 'bg-slate-700 text-white')
+            } ${msg.sender === 'me' ? 'rounded-tr-none' : 'rounded-tl-none'}`}>
+              {msg.content}
+            </div>
+          </div>
+        ))}
       </div>
 
-      {/* Action Area */}
-      <div className="p-4 bg-slate-800 border-t border-slate-700 shrink-0">
-         
-         {pendingGuess ? (
-            // Opponent made a guess, I must confirm
-            <div className="animate-in slide-in-from-bottom duration-300">
-               <div className="bg-slate-700 p-4 rounded-xl mb-2 text-center border border-yellow-500/50">
-                  <h3 className="text-yellow-400 font-bold mb-1">Oponente chutou:</h3>
-                  <p className="text-2xl text-white font-bold mb-4">"{pendingGuess}"</p>
-                  <p className="text-slate-300 mb-4 text-sm">Isso está correto? (Se Sim, ele vence)</p>
-                  <div className="flex gap-4 justify-center">
-                     <button onClick={() => resolveGuess(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg font-bold flex gap-2"><Check /> Sim, Correto</button>
-                     <button onClick={() => resolveGuess(false)} className="bg-rose-600 hover:bg-rose-500 text-white px-6 py-2 rounded-lg font-bold flex gap-2"><ArrowLeft /> Não, Errado</button>
-                  </div>
-               </div>
+      {/* FOOTER INPUT */}
+      <div className="p-3 bg-slate-800 border-t border-slate-700">
+        
+        {/* MODO DE RESPOSTA (Se a ultima msg foi pergunta do oponente) */}
+        {!isMyTurn && messages.length > 0 && messages[messages.length-1].sender === 'opponent' && messages[messages.length-1].type === 'text' ? (
+          <div>
+            <p className="text-xs text-slate-400 text-center mb-2">Responda a pergunta do oponente:</p>
+            <div className="grid grid-cols-3 gap-2">
+              {[AnswerType.YES, AnswerType.NO, AnswerType.DONT_KNOW, AnswerType.MAYBE, AnswerType.PROBABLY, AnswerType.PROBABLY_NOT].map(ans => (
+                <button key={ans} onClick={() => sendAnswer(ans)} className={`py-2 px-1 rounded text-xs font-bold transition-colors ${
+                  (ans === AnswerType.NO || ans === AnswerType.PROBABLY_NOT) 
+                  ? 'bg-rose-600 hover:bg-rose-700 text-white' 
+                  : 'bg-slate-600 hover:bg-slate-500 text-white'
+                }`}>
+                  {ans}
+                </button>
+              ))}
             </div>
-         ) : !isMyTurn ? (
-            // Receiving opponent question OR waiting for them to play
-            messages.length > 0 && messages[messages.length - 1].sender === 'opponent' && messages[messages.length - 1].type === 'text' ? (
-                <div className="flex flex-col gap-2">
-                   <p className="text-xs text-slate-400 text-center mb-1">Responda a pergunta do oponente:</p>
-                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                      {Object.values(AnswerType).map(ans => (
-                          <button 
-                            key={ans}
-                            onClick={() => sendAnswer(ans)}
-                            className={`py-3 rounded-xl text-sm font-medium transition-colors border ${
-                              (ans === AnswerType.NO || ans === AnswerType.PROBABLY_NOT)
-                              ? 'bg-rose-900/30 border-rose-700/50 hover:bg-rose-800 text-rose-100' 
-                              : 'bg-slate-700 border-slate-600 hover:bg-slate-600 text-white'
-                            }`}
-                          >
-                            {ans}
-                          </button>
-                      ))}
-                   </div>
-                </div>
-            ) : (
-                // Just waiting
-                <div className="text-center text-slate-500 py-4 flex items-center justify-center gap-2">
-                   <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce"></div>
-                   Aguardando oponente perguntar ou chutar...
-                </div>
-            )
-         ) : (
-            // My Turn
-            <div className="flex flex-col gap-2">
-               {isGuessingMode ? (
-                  <div className="bg-yellow-900/20 border border-yellow-600/30 p-2 rounded-lg mb-2">
-                     <p className="text-yellow-500 text-xs text-center font-bold">MODO DE CHUTE: Se você errar, passa a vez!</p>
-                  </div>
-               ) : null}
-               
-               <div className="flex gap-2">
-                  <button 
-                    onClick={() => setIsGuessingMode(!isGuessingMode)}
-                    className={`p-3 rounded-xl transition-colors ${isGuessingMode ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
-                    title="Tentar Adivinhar"
-                  >
-                     <Trophy size={20} />
-                  </button>
-                  <input
-                    type="text"
-                    value={currentInput}
-                    onChange={(e) => setCurrentInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && sendQuestion()}
-                    placeholder={isGuessingMode ? "Digite seu palpite final..." : "Faça uma pergunta de Sim/Não..."}
-                    className={`flex-1 bg-slate-950 border ${isGuessingMode ? 'border-yellow-600 focus:ring-yellow-600' : 'border-slate-600 focus:ring-indigo-500'} text-white px-4 py-3 rounded-xl focus:outline-none focus:ring-2 transition-all`}
-                  />
-                  <button
-                    onClick={sendQuestion}
-                    disabled={!currentInput.trim()}
-                    className={`${isGuessingMode ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-indigo-600 hover:bg-indigo-700'} disabled:opacity-50 text-white p-3 rounded-xl transition-all`}
-                  >
-                    <Send size={20} />
-                  </button>
-               </div>
-            </div>
-         )}
-         
+          </div>
+        ) : (
+          /* MODO DE PERGUNTA */
+          <div className="flex gap-2">
+             <input 
+               value={currentInput}
+               onChange={e => setCurrentInput(e.target.value)}
+               onKeyDown={e => e.key === 'Enter' && sendMessage()}
+               placeholder="Pergunte ou digite o NOME EXATO para vencer..."
+               className="flex-1 bg-slate-950 border border-slate-600 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-indigo-500 placeholder:text-slate-600"
+             />
+             <button onClick={sendMessage} disabled={!currentInput.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-xl">
+               <Send size={20} />
+             </button>
+          </div>
+        )}
       </div>
     </div>
   );

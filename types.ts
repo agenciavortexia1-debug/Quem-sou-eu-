@@ -15,19 +15,22 @@ export enum AnswerType {
 
 export interface ChatMessage {
   sender: 'me' | 'opponent' | 'system';
-  type: 'text' | 'answer' | 'guess';
+  type: 'text' | 'answer' | 'victory' | 'info';
   content: string;
-  answerType?: AnswerType;
   timestamp: number;
 }
 
 export enum PacketType {
-  HANDSHAKE = 'HANDSHAKE',
-  SETUP_CHARACTER = 'SETUP_CHARACTER',
-  QUESTION = 'QUESTION',
-  ANSWER = 'ANSWER',
-  GUESS = 'GUESS',
-  GUESS_RESULT = 'GUESS_RESULT',
+  // Troca de dados inicial
+  HANDSHAKE = 'HANDSHAKE', 
+  EXCHANGE_CHARACTER = 'EXCHANGE_CHARACTER', // Envia meu personagem para o oponente guardar (e esconder)
+  
+  // Gameplay
+  MESSAGE = 'MESSAGE', // Pergunta ou Chute
+  ANSWER = 'ANSWER',   // Resposta (Sim/Não...)
+  
+  // Fim de jogo
+  GAME_WON = 'GAME_WON', // Aviso: "Eu ganhei!"
   RESTART = 'RESTART'
 }
 
