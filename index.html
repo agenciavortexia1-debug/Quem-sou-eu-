@@ -29,16 +29,20 @@
         animation: float 6s ease-in-out infinite;
       }
     </style>
-  <script type="importmap">
+    <script>
+      // Polyfill simple global object for PeerJS in Vite environment if needed
+      window.global = window;
+    </script>
+<script type="importmap">
 {
   "imports": {
     "react": "https://esm.sh/react@^19.2.3",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
     "react/": "https://esm.sh/react@^19.2.3/",
     "lucide-react": "https://esm.sh/lucide-react@^0.561.0",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "peerjs": "https://esm.sh/peerjs@^1.5.5",
     "vite": "https://esm.sh/vite@^7.2.7",
-    "peerjs": "https://esm.sh/peerjs@^1.5.5"
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2"
   }
 }
 </script>
