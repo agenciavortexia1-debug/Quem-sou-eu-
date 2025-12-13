@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { peerService } from '../services/peerService';
 import { AnswerType, NetworkPacket, PacketType, ChatMessage } from '../types';
-import { ArrowLeft, Copy, Send, AlertTriangle, User, RefreshCw, Trophy, Crown, RefreshCcw, HelpCircle, Eye, EyeOff, ShieldQuestion, Check, Sparkles } from 'lucide-react';
+import { ArrowLeft, Copy, Send, AlertTriangle, User, RefreshCw, Trophy, Crown, Check, Sparkles, ChevronLeft } from 'lucide-react';
 
 interface Props {
   isHost: boolean;
@@ -32,15 +32,15 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   const [connectionError, setConnectionError] = useState('');
 
   // --- GAME LOGIC STATE ---
-  const [myCharacter, setMyCharacter] = useState('');           // Quem EU sou (Eu defini)
-  const [opponentCharacter, setOpponentCharacter] = useState(''); // Quem ELE é (Ele definiu, fica oculto pra mim)
+  const [myCharacter, setMyCharacter] = useState('');           
+  const [opponentCharacter, setOpponentCharacter] = useState(''); 
   
   const [setupInput, setSetupInput] = useState('');
   
   // Chat & Turnos
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [currentInput, setCurrentInput] = useState('');
-  const [isMyTurn, setIsMyTurn] = useState(false); // Controle visual de turno
+  const [isMyTurn, setIsMyTurn] = useState(false); 
   const [gameResult, setGameResult] = useState<'VICTORY' | 'DEFEAT' | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -57,7 +57,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   useEffect(() => {
     if (phase === Phase.SETUP && myCharacter && opponentCharacter) {
       setPhase(Phase.PLAYING);
-      // Host começa perguntando
       setIsMyTurn(isHost);
     }
   }, [phase, myCharacter, opponentCharacter, isHost]);
@@ -67,13 +66,8 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     handlePacketRef.current = (packet: NetworkPacket) => {
       switch (packet.type) {
         case PacketType.EXCHANGE_CHARACTER:
-          // Recebi o personagem do oponente.
-          // Guardo no estado para validar vitórias, mas NÃO mostro na UI (fica oculto visualmente).
           if (opponentCharacter === packet.payload) return;
-          console.log("Personagem do oponente recebido para validação:", packet.payload);
           setOpponentCharacter(packet.payload);
-          
-          // Se eu já escolhi o meu, reenvio para garantir sincronia (Handshake)
           if (myCharacter) {
              peerService.send(PacketType.EXCHANGE_CHARACTER, myCharacter);
           }
@@ -86,8 +80,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             content: packet.payload,
             timestamp: Date.now()
           }]);
-          // Se recebi uma pergunta, agora tenho que responder.
-          // Turno visual muda para mim (responder).
           break;
 
         case PacketType.ANSWER:
@@ -98,8 +90,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             timestamp: Date.now()
           }]);
           
-          // Lógica de Turno Simplificada:
-          // Se recebi "Não" ou "Provavelmente não", perco a vez.
           const isNegative = packet.payload === AnswerType.NO || packet.payload === AnswerType.PROBABLY_NOT;
           if (isNegative) {
             setIsMyTurn(false); 
@@ -109,7 +99,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
           break;
 
         case PacketType.GAME_WON:
-          // Oponente disse que ganhou (ele acertou meu personagem). Logo, eu perdi.
           setGameResult('DEFEAT');
           setPhase(Phase.GAME_OVER);
           break;
@@ -159,7 +148,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   const confirmMyCharacter = () => {
     if (!setupInput.trim()) return;
     setMyCharacter(setupInput);
-    // Envio meu personagem para o oponente guardar (para validação dele)
     peerService.send(PacketType.EXCHANGE_CHARACTER, setupInput);
   };
 
@@ -170,23 +158,16 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   const sendMessage = () => {
     if (!currentInput.trim()) return;
 
-    // --- LÓGICA DE VALIDAÇÃO AUTOMÁTICA DE VITÓRIA ---
-    // Normalizamos ambas as strings (remove acentos, espaços, minúsculas)
     const guess = normalizeString(currentInput);
     const target = normalizeString(opponentCharacter);
 
-    // Se o que eu digitei bate com o personagem oculto do oponente:
     if (opponentCharacter && guess === target) {
-      // 1. Defino minha vitória localmente
       setGameResult('VICTORY');
       setPhase(Phase.GAME_OVER);
-      
-      // 2. Aviso o oponente que o jogo acabou (ele perdeu)
       peerService.send(PacketType.GAME_WON, null); 
       return;
     }
 
-    // Se não for vitória, envia mensagem normal
     peerService.send(PacketType.MESSAGE, currentInput);
     setMessages(prev => [...prev, {
       sender: 'me',
@@ -195,7 +176,6 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
       timestamp: Date.now()
     }]);
     
-    // Perco a vez de interagir enquanto espero resposta
     setIsMyTurn(false);
     setCurrentInput('');
   };
@@ -209,12 +189,11 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
       timestamp: Date.now()
     }]);
 
-    // Se respondi "Não", ganho a vez de perguntar.
     const isNegative = ans === AnswerType.NO || ans === AnswerType.PROBABLY_NOT;
     if (isNegative) {
       setIsMyTurn(true);
     } else {
-      setIsMyTurn(false); // Continuo respondendo
+      setIsMyTurn(false); 
     }
   };
 
@@ -229,186 +208,221 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     setIsMyTurn(isHost);
   };
 
-  // --- RENDER ---
-
-  if (connectionError) return (
-    <div className="flex flex-col items-center justify-center h-96 p-6 text-center">
-      <AlertTriangle className="w-16 h-16 text-red-500 mb-4" />
-      <p className="text-white mb-4">{connectionError}</p>
-      <button onClick={onBack} className="bg-slate-700 px-4 py-2 rounded">Voltar</button>
+  // --- RENDER UTILS ---
+  // Wrapper padrão para telas de "Menu/Card"
+  const CardWrapper: React.FC<{children: React.ReactNode}> = ({children}) => (
+    <div className="flex flex-col h-full justify-center px-4 md:px-0">
+        <div className="w-full max-w-md mx-auto bg-slate-800 p-6 md:p-8 rounded-2xl border border-slate-700 shadow-xl">
+            {children}
+        </div>
     </div>
   );
 
+  // --- RENDER ---
+
+  if (connectionError) return (
+    <CardWrapper>
+      <div className="flex flex-col items-center justify-center text-center">
+        <AlertTriangle className="w-16 h-16 text-red-500 mb-4" />
+        <p className="text-white mb-4">{connectionError}</p>
+        <button onClick={onBack} className="bg-slate-700 px-6 py-3 rounded-xl w-full">Voltar</button>
+      </div>
+    </CardWrapper>
+  );
+
   if (phase === Phase.CONNECTING) return (
-    <div className="flex flex-col items-center justify-center h-96 text-indigo-400">
-      <div className="animate-spin w-8 h-8 border-4 border-current border-t-transparent rounded-full mb-4"></div>
+    <div className="flex flex-col items-center justify-center h-full text-indigo-400">
+      <div className="animate-spin w-10 h-10 border-4 border-current border-t-transparent rounded-full mb-4"></div>
       Carregando...
     </div>
   );
 
   if (phase === Phase.LOBBY) return (
-    <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl">
-      <button onClick={onBack} className="mb-6 text-slate-400 flex items-center gap-2"><ArrowLeft size={16}/> Voltar</button>
+    <CardWrapper>
+      <button onClick={onBack} className="mb-6 text-slate-400 flex items-center gap-2 hover:text-white transition-colors">
+        <ArrowLeft size={20}/> Voltar
+      </button>
       {isHost ? (
         <div className="text-center">
           <h2 className="text-2xl font-bold text-white mb-2">Código da Sala</h2>
-          <div className="flex bg-slate-950 p-4 rounded-xl border border-slate-700 mb-6 gap-2">
-            <code className="flex-1 text-xl font-mono text-indigo-400">{myId}</code>
-            <button onClick={() => navigator.clipboard.writeText(myId)}><Copy className="text-slate-400" /></button>
+          <div className="flex bg-slate-950 p-4 rounded-xl border border-slate-700 mb-6 gap-2 items-center">
+            <code className="flex-1 text-2xl font-mono text-indigo-400 tracking-wider">{myId}</code>
+            <button onClick={() => navigator.clipboard.writeText(myId)} className="p-2 active:bg-slate-800 rounded"><Copy className="text-slate-400" /></button>
           </div>
-          <div className="flex justify-center gap-2 text-slate-500 animate-pulse"><RefreshCw className="animate-spin" /> Esperando Oponente...</div>
+          <div className="flex justify-center gap-2 text-slate-500 animate-pulse items-center">
+            <RefreshCw className="animate-spin" size={16} /> Aguardando Oponente...
+          </div>
         </div>
       ) : (
         <div>
           <h2 className="text-2xl font-bold text-white mb-4">Entrar</h2>
-          <input value={hostIdInput} onChange={e => setHostIdInput(e.target.value)} placeholder="Cole o código aqui" className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-4 text-center font-mono" />
-          <button onClick={handleJoin} disabled={!hostIdInput} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl">Conectar</button>
+          <input value={hostIdInput} onChange={e => setHostIdInput(e.target.value)} placeholder="Cole o código aqui" className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-6 text-center font-mono text-lg" />
+          <button onClick={handleJoin} disabled={!hostIdInput} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl text-lg shadow-lg">Conectar</button>
         </div>
       )}
-    </div>
+    </CardWrapper>
   );
 
   if (phase === Phase.SETUP) return (
-    <div className="max-w-lg mx-auto bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl text-center">
-      <User className="w-16 h-16 text-indigo-400 mx-auto mb-4" />
-      <h2 className="text-2xl font-bold text-white mb-2">Quem você vai ser?</h2>
-      <p className="text-slate-400 mb-6">Escolha o personagem que o oponente terá que adivinhar.</p>
-      
-      {!myCharacter ? (
-        <>
-          <input value={setupInput} onChange={e => setSetupInput(e.target.value)} placeholder="Ex: Homem Aranha" className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-4 text-center text-lg" />
-          <button onClick={confirmMyCharacter} disabled={!setupInput.trim()} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl">Confirmar</button>
-        </>
-      ) : (
-        <div className="text-emerald-400 font-bold text-xl p-4 bg-emerald-900/20 rounded-xl mb-4 border border-emerald-500/50">
-          Você é: {myCharacter}
+    <CardWrapper>
+      <div className="text-center">
+        <div className="bg-slate-900/50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 border border-slate-700">
+           <User className="w-10 h-10 text-indigo-400" />
         </div>
-      )}
-
-      <div className="mt-6 border-t border-slate-700 pt-6">
-        {!opponentCharacter ? (
-          <div className="flex flex-col items-center gap-2 text-slate-500">
-            <div className="animate-spin w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full"></div>
-            Aguardando oponente escolher...
-            <button onClick={resendCharacter} className="text-xs text-indigo-400 underline">Reenviar meu status</button>
-          </div>
+        <h2 className="text-2xl font-bold text-white mb-2">Sua Identidade</h2>
+        <p className="text-slate-400 mb-6 text-sm">Escolha quem o oponente vai tentar adivinhar.</p>
+        
+        {!myCharacter ? (
+          <>
+            <input value={setupInput} onChange={e => setSetupInput(e.target.value)} placeholder="Ex: Batman" className="w-full bg-slate-950 border border-slate-700 p-4 rounded-xl text-white mb-4 text-center text-lg placeholder:text-slate-600" />
+            <button onClick={confirmMyCharacter} disabled={!setupInput.trim()} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl text-lg shadow-lg shadow-emerald-900/20 transition-all active:scale-[0.98]">Confirmar</button>
+          </>
         ) : (
-          <div className="flex items-center justify-center gap-2 text-emerald-500 font-bold">
-            <Check size={20} /> Oponente está pronto!
+          <div className="text-emerald-400 font-bold text-xl p-6 bg-emerald-900/20 rounded-xl mb-4 border border-emerald-500/50">
+             {myCharacter}
           </div>
         )}
+
+        <div className="mt-8 border-t border-slate-700 pt-6">
+          {!opponentCharacter ? (
+            <div className="flex flex-col items-center gap-3 text-slate-500 text-sm">
+              <div className="animate-spin w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full"></div>
+              Esperando oponente...
+              <button onClick={resendCharacter} className="text-xs text-indigo-400 underline p-2">Reenviar</button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center gap-2 text-emerald-500 font-bold bg-emerald-950/30 p-3 rounded-lg">
+              <Check size={20} /> Oponente pronto!
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </CardWrapper>
   );
 
   if (phase === Phase.GAME_OVER) return (
-    <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-2xl text-center animate-in zoom-in duration-500">
-      {gameResult === 'VICTORY' ? (
-        <>
-          <div className="relative inline-block">
-             <div className="absolute inset-0 bg-yellow-500 blur-2xl opacity-20 animate-pulse"></div>
-             <Trophy className="relative z-10 w-24 h-24 text-yellow-400 mx-auto mb-6 drop-shadow-[0_0_15px_rgba(250,204,21,0.5)]" />
-          </div>
-          
-          <h2 className="text-4xl font-black italic text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-amber-400 to-yellow-600 mb-2 tracking-tight">
-            VITÓRIA!
-          </h2>
-          <p className="text-slate-400 mb-8 font-medium">Você descobriu a identidade secreta:</p>
-          
-          <div className="relative mb-10 group">
-            <div className="absolute -inset-1 bg-gradient-to-r from-yellow-600 to-amber-600 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
-            <div className="relative bg-slate-900 border border-yellow-500/30 p-6 rounded-xl shadow-xl">
-               <p className="text-xs text-yellow-500/70 uppercase tracking-[0.2em] mb-2 font-bold">Oponente era</p>
-               <div className="text-4xl md:text-5xl font-black text-yellow-100 tracking-wide uppercase break-words drop-shadow-md">
+    <div className="flex flex-col items-center justify-center h-full px-6 animate-in zoom-in duration-300">
+      <div className="max-w-md w-full bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-2xl text-center">
+        {gameResult === 'VICTORY' ? (
+          <>
+            <div className="relative inline-block">
+               <div className="absolute inset-0 bg-yellow-500 blur-2xl opacity-20 animate-pulse"></div>
+               <Trophy className="relative z-10 w-24 h-24 text-yellow-400 mx-auto mb-6 drop-shadow-[0_0_15px_rgba(250,204,21,0.5)]" />
+            </div>
+            
+            <h2 className="text-4xl font-black italic text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-amber-400 to-yellow-600 mb-2 tracking-tight">
+              VITÓRIA!
+            </h2>
+            <p className="text-slate-400 mb-8 font-medium">Você acertou!</p>
+            
+            <div className="relative mb-10 group">
+              <div className="absolute -inset-1 bg-gradient-to-r from-yellow-600 to-amber-600 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
+              <div className="relative bg-slate-900 border border-yellow-500/30 p-6 rounded-xl shadow-xl">
+                 <p className="text-xs text-yellow-500/70 uppercase tracking-[0.2em] mb-2 font-bold">Oponente era</p>
+                 <div className="text-3xl font-black text-yellow-100 tracking-wide uppercase break-words drop-shadow-md">
+                   {opponentCharacter}
+                 </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="relative inline-block">
+               <div className="absolute inset-0 bg-rose-500 blur-2xl opacity-10"></div>
+               <Crown className="relative z-10 w-24 h-24 text-rose-400 mx-auto mb-6" />
+            </div>
+
+            <h2 className="text-3xl font-bold text-white mb-2">DERROTA</h2>
+            <p className="text-slate-400 mb-8">Ele descobriu antes de você.</p>
+            
+            <div className="bg-slate-950/50 p-6 rounded-xl border border-slate-700 mb-10 shadow-inner">
+               <p className="text-xs text-slate-500 uppercase tracking-[0.2em] mb-2 font-bold flex items-center justify-center gap-2">
+                 <Sparkles size={12} /> Oponente era
+               </p>
+               <div className="text-2xl font-bold text-indigo-300 tracking-wide uppercase break-words">
                  {opponentCharacter}
                </div>
             </div>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="relative inline-block">
-             <div className="absolute inset-0 bg-rose-500 blur-2xl opacity-10"></div>
-             <Crown className="relative z-10 w-24 h-24 text-rose-400 mx-auto mb-6" />
-          </div>
-
-          <h2 className="text-3xl font-bold text-white mb-2">DERROTA</h2>
-          <p className="text-slate-400 mb-8">Ele descobriu quem era antes de você.</p>
-          
-          <div className="bg-slate-950/50 p-6 rounded-xl border border-slate-700 mb-10 shadow-inner">
-             <p className="text-xs text-slate-500 uppercase tracking-[0.2em] mb-2 font-bold flex items-center justify-center gap-2">
-               <Sparkles size={12} /> O personagem dele era
-             </p>
-             <div className="text-3xl md:text-4xl font-bold text-indigo-300 tracking-wide uppercase break-words">
-               {opponentCharacter}
-             </div>
-          </div>
-        </>
-      )}
-      <button 
-        onClick={() => fullReset(true)} 
-        className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 hover:scale-[1.02] active:scale-[0.98] text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-900/20"
-      >
-        <RefreshCw size={20} /> 
-        Jogar Novamente
-      </button>
+          </>
+        )}
+        <button 
+          onClick={() => fullReset(true)} 
+          className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-900/20"
+        >
+          <RefreshCw size={20} /> 
+          Jogar Novamente
+        </button>
+      </div>
     </div>
   );
 
-  // --- PLAYING ---
+  // --- PLAYING (FULL SCREEN MOBILE UI) ---
   return (
-    <div className="flex flex-col h-[calc(100vh-80px)] max-w-4xl mx-auto w-full bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-2xl">
-      {/* HEADER */}
-      <div className="bg-slate-800 p-3 grid grid-cols-3 items-center border-b border-slate-700 shrink-0">
-        <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-700/50">
-          <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Você é</p>
-          <p className="text-emerald-400 font-bold truncate max-w-[120px]" title={myCharacter}>{myCharacter}</p>
-        </div>
-
-        <div className="text-center">
-          <div className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${isMyTurn ? 'bg-emerald-900/30 border-emerald-500 text-emerald-400' : 'bg-rose-900/30 border-rose-500 text-rose-400'}`}>
-            {isMyTurn ? 'Sua Vez' : 'Vez do Oponente'}
+    <div className="flex flex-col h-full w-full bg-slate-900 md:rounded-xl md:overflow-hidden md:border md:border-slate-800 md:shadow-2xl md:h-[calc(100vh-80px)] md:max-w-4xl">
+      {/* HEADER - Sticky Mobile */}
+      <div className="bg-slate-800 p-2 md:p-3 grid grid-cols-[1fr_auto_1fr] items-center border-b border-slate-700 shrink-0 pt-safe z-10">
+        
+        {/* Left: Me */}
+        <div className="flex flex-col items-start min-w-0">
+          <div className="bg-slate-900/50 px-3 py-1.5 rounded-lg border border-slate-700/50 w-full max-w-[140px]">
+            <p className="text-[10px] text-slate-500 uppercase font-bold leading-tight">Você é</p>
+            <p className="text-emerald-400 font-bold truncate text-sm" title={myCharacter}>{myCharacter}</p>
           </div>
         </div>
 
-        <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-700/50 text-right">
-          <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Oponente é</p>
-          <p className="text-slate-500 font-mono tracking-widest text-lg leading-none">*****</p>
+        {/* Center: Turn Status */}
+        <div className="px-2">
+          <div className={`px-3 py-1 rounded-full text-[10px] md:text-xs font-bold border whitespace-nowrap shadow-sm ${isMyTurn ? 'bg-emerald-900/30 border-emerald-500 text-emerald-400 animate-pulse' : 'bg-rose-900/30 border-rose-500 text-rose-400'}`}>
+            {isMyTurn ? 'SUA VEZ' : 'ESPERE'}
+          </div>
+        </div>
+
+        {/* Right: Opponent */}
+        <div className="flex flex-col items-end min-w-0">
+           <div className="bg-slate-900/50 px-3 py-1.5 rounded-lg border border-slate-700/50 w-full max-w-[140px] text-right">
+            <p className="text-[10px] text-slate-500 uppercase font-bold leading-tight">Alvo</p>
+            <p className="text-slate-400 font-mono tracking-widest text-sm leading-none">?????</p>
+          </div>
         </div>
       </div>
 
-      {/* CHAT */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-900/50">
-        <p className="text-center text-xs text-slate-500 py-2 bg-slate-800/50 rounded-full mx-auto w-fit px-4">
-          Para vencer, digite o <strong>nome do personagem</strong> no chat!
-        </p>
+      {/* CHAT AREA */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 md:p-4 space-y-3 bg-slate-900/50 overscroll-contain">
+        <div className="flex justify-center my-4">
+           <span className="text-[10px] md:text-xs text-slate-400 bg-slate-800/80 px-3 py-1 rounded-full border border-slate-700/50">
+             Descubra quem é seu alvo. Digite o nome para vencer!
+           </span>
+        </div>
         
         {messages.map((msg, i) => (
-          <div key={i} className={`flex flex-col ${msg.sender === 'me' ? 'items-end' : 'items-start'}`}>
-            <div className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
+          <div key={i} className={`flex flex-col ${msg.sender === 'me' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2 duration-300`}>
+            <div className={`max-w-[85%] md:max-w-[75%] rounded-2xl px-4 py-2.5 text-sm md:text-base shadow-sm break-words ${
               msg.sender === 'me' 
-                ? (msg.type === 'answer' ? 'bg-indigo-900 text-indigo-100 border border-indigo-700' : 'bg-indigo-600 text-white') 
+                ? (msg.type === 'answer' ? 'bg-indigo-900 text-indigo-100 border border-indigo-700/50' : 'bg-indigo-600 text-white') 
                 : (msg.type === 'answer' ? 'bg-slate-800 text-slate-300 border border-slate-700' : 'bg-slate-700 text-white')
             } ${msg.sender === 'me' ? 'rounded-tr-none' : 'rounded-tl-none'}`}>
               {msg.content}
             </div>
+            <span className="text-[10px] text-slate-600 px-1 mt-1 opacity-60">
+                {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+            </span>
           </div>
         ))}
       </div>
 
-      {/* FOOTER INPUT */}
-      <div className="p-3 bg-slate-800 border-t border-slate-700">
+      {/* INPUT AREA - Safe Area Bottom */}
+      <div className="p-3 bg-slate-800 border-t border-slate-700 pb-safe">
         
-        {/* MODO DE RESPOSTA (Se a ultima msg foi pergunta do oponente) */}
+        {/* ANSWER MODE */}
         {!isMyTurn && messages.length > 0 && messages[messages.length-1].sender === 'opponent' && messages[messages.length-1].type === 'text' ? (
-          <div>
-            <p className="text-xs text-slate-400 text-center mb-2">Responda a pergunta do oponente:</p>
+          <div className="animate-in slide-in-from-bottom-4 duration-300">
+            <p className="text-xs text-slate-400 text-center mb-2 font-medium">Responda a pergunta:</p>
             <div className="grid grid-cols-3 gap-2">
               {[AnswerType.YES, AnswerType.NO, AnswerType.DONT_KNOW, AnswerType.MAYBE, AnswerType.PROBABLY, AnswerType.PROBABLY_NOT].map(ans => (
-                <button key={ans} onClick={() => sendAnswer(ans)} className={`py-2 px-1 rounded text-xs font-bold transition-colors ${
+                <button key={ans} onClick={() => sendAnswer(ans)} className={`py-3 md:py-2 px-1 rounded-lg text-[10px] md:text-xs font-bold transition-all active:scale-95 shadow-sm border border-b-4 ${
                   (ans === AnswerType.NO || ans === AnswerType.PROBABLY_NOT) 
-                  ? 'bg-rose-600 hover:bg-rose-700 text-white' 
-                  : 'bg-slate-600 hover:bg-slate-500 text-white'
+                  ? 'bg-rose-600 border-rose-800 hover:bg-rose-500 text-white' 
+                  : 'bg-slate-600 border-slate-800 hover:bg-slate-500 text-white'
                 }`}>
                   {ans}
                 </button>
@@ -416,17 +430,25 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
             </div>
           </div>
         ) : (
-          /* MODO DE PERGUNTA */
-          <div className="flex gap-2">
+          /* QUESTION / GUESS MODE */
+          <div className="flex gap-2 items-center">
              <input 
                value={currentInput}
                onChange={e => setCurrentInput(e.target.value)}
                onKeyDown={e => e.key === 'Enter' && sendMessage()}
-               placeholder="Pergunte ou digite o NOME EXATO para vencer..."
-               className="flex-1 bg-slate-950 border border-slate-600 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-indigo-500 placeholder:text-slate-600"
+               placeholder="Perguntar ou Adivinhar..."
+               className="flex-1 bg-slate-950 border border-slate-600 text-white px-4 py-3.5 rounded-full focus:outline-none focus:border-indigo-500 placeholder:text-slate-600 text-base"
              />
-             <button onClick={sendMessage} disabled={!currentInput.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-xl">
-               <Send size={20} />
+             <button 
+                onClick={sendMessage} 
+                disabled={!currentInput.trim()} 
+                className={`p-3.5 rounded-full transition-all duration-200 ${
+                    !currentInput.trim() 
+                    ? 'bg-slate-700 text-slate-500' 
+                    : 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/50 active:scale-90'
+                }`}
+             >
+               <Send size={20} className={currentInput.trim() ? "ml-0.5" : ""} />
              </button>
           </div>
         )}
