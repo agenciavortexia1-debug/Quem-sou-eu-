@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { peerService } from '../services/peerService';
 import { AnswerType, NetworkPacket, PacketType, ChatMessage } from '../types';
-import { ArrowLeft, Copy, Check, Send, AlertTriangle, User, RefreshCw, Trophy, Crown } from 'lucide-react';
+import { ArrowLeft, Copy, Check, Send, AlertTriangle, User, RefreshCw, Trophy, Crown, RefreshCcw } from 'lucide-react';
 
 interface Props {
   isHost: boolean;
@@ -49,7 +49,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
   }, [messages, pendingGuess]);
 
   // 2. Monitorar transição de SETUP para PLAYING
-  // Isso corrige o bug de travamento: assim que tivermos as duas infos, o jogo começa.
+  // Isso garante que assim que tivermos as duas infos, o jogo começa.
   useEffect(() => {
     if (phase === Phase.SETUP && myTargetCharacter && mySecretIdentity) {
       setPhase(Phase.PLAYING);
@@ -62,8 +62,20 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     handlePacketRef.current = (packet: NetworkPacket) => {
       switch (packet.type) {
         case PacketType.SETUP_CHARACTER:
+          // IMPORTANTE: Evitar loops e re-renderizações desnecessárias
+          if (mySecretIdentity === packet.payload) return;
+
+          console.log("Recebido personagem do oponente:", packet.payload);
           setMySecretIdentity(packet.payload);
-          // A transição de fase agora é tratada pelo useEffect acima
+          
+          // LÓGICA DE ECO/SYNC:
+          // Se eu já escolhi o personagem do meu oponente, mas acabei de receber o meu,
+          // reenvio o meu personagem para garantir que o oponente também tenha.
+          // Isso resolve o problema onde um lado fica "Carregando" porque perdeu o primeiro pacote.
+          if (myTargetCharacter) {
+             console.log("Reenviando meu personagem para sincronizar...");
+             peerService.send(PacketType.SETUP_CHARACTER, myTargetCharacter);
+          }
           break;
         
         case PacketType.QUESTION:
@@ -119,11 +131,7 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
       try {
         const id = await peerService.initialize();
         setMyId(id);
-        if (isHost) {
-          setPhase(Phase.LOBBY);
-        } else {
-          setPhase(Phase.LOBBY);
-        }
+        setPhase(Phase.LOBBY);
       } catch (err) {
         setConnectionError('Falha ao conectar ao servidor de rede.');
       }
@@ -162,11 +170,16 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
     setMyTargetCharacter(setupInput);
     peerService.send(PacketType.SETUP_CHARACTER, setupInput);
     
-    // Não tentamos mudar de fase aqui manualmente. 
-    // O useEffect [phase, myTargetCharacter, mySecretIdentity] fará isso automaticamente
-    // quando a resposta chegar (ou se já tiver chegado).
+    // Se ainda não sei quem eu sou, tenho que esperar o oponente.
     if (!mySecretIdentity) {
       setIsWaitingForOpponentSetup(true);
+    }
+  };
+
+  const handleResendSetup = () => {
+    if (myTargetCharacter) {
+      // Botão de emergência para destravar o jogo
+      peerService.send(PacketType.SETUP_CHARACTER, myTargetCharacter);
     }
   };
 
@@ -332,8 +345,18 @@ const OnlineGame: React.FC<Props> = ({ isHost, onBack }) => {
          )}
          
          {isWaitingForOpponentSetup && (
-            <div className="mt-4 flex justify-center">
+            <div className="mt-4 flex flex-col items-center gap-4">
               <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+              
+              {/* Botão de Resgate para destravar */}
+              <button 
+                onClick={handleResendSetup}
+                className="mt-2 text-xs text-indigo-400 hover:text-white flex items-center gap-1 border border-indigo-500/30 px-3 py-1 rounded hover:bg-indigo-500/20 transition-colors"
+                title="Clique aqui se estiver esperando há muito tempo"
+              >
+                <RefreshCcw size={12} />
+                Reenviar Informações
+              </button>
             </div>
          )}
       </div>
