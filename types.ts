@@ -1,8 +1,9 @@
 export enum GameMode {
-  MENU = 'MENU',
-  HOST = 'HOST',
-  JOIN = 'JOIN'
+  SELECTION = 'SELECTION',
+  PLAYING = 'PLAYING'
 }
+
+export type PlayerProfile = 'TUY' | 'RICK';
 
 export enum AnswerType {
   YES = 'Sim',
@@ -22,8 +23,7 @@ export interface ChatMessage {
 
 export enum PacketType {
   // Troca de dados inicial
-  HANDSHAKE = 'HANDSHAKE', 
-  EXCHANGE_CHARACTER = 'EXCHANGE_CHARACTER', // Envia meu personagem para o oponente guardar (e esconder)
+  EXCHANGE_CHARACTER = 'EXCHANGE_CHARACTER', // Envia o personagem que ESCOLHI para o oponente ser
   
   // Gameplay
   MESSAGE = 'MESSAGE', // Pergunta ou Chute

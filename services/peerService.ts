@@ -8,16 +8,17 @@ export class PeerService {
   onConnectCallback: (() => void) | null = null;
   onCloseCallback: (() => void) | null = null;
 
-  async initialize(): Promise<string> {
+  // Modificado para aceitar um ID fixo opcional
+  async initialize(customId?: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      // Create a random ID (PeerJS default)
-      const peer = new Peer();
+      // Se customId for passado, o PeerJS tentará usar esse ID na rede
+      const peer = customId ? new Peer(customId) : new Peer();
       
       peer.on('open', (id) => {
         this.peer = peer;
         console.log('My Peer ID:', id);
         
-        // Listen for incoming connections (Host logic)
+        // Listen for incoming connections
         peer.on('connection', (conn) => {
           this.handleConnection(conn);
         });
@@ -25,8 +26,13 @@ export class PeerService {
         resolve(id);
       });
 
-      peer.on('error', (err) => {
+      peer.on('error', (err: any) => {
         console.error('Peer error:', err);
+        // Se o ID já estiver em uso (ex: reconexão rápida), tentamos reconectar ou falhamos
+        if (err.type === 'unavailable-id') {
+           // Opcional: Lógica de retry poderia ser implementada aqui, 
+           // mas para este caso simples, vamos deixar o erro subir.
+        }
         reject(err);
       });
     });
@@ -34,15 +40,29 @@ export class PeerService {
 
   connect(remotePeerId: string) {
     if (!this.peer) return;
-    const conn = this.peer.connect(remotePeerId);
+    
+    // Se já tiver conexão, ignora
+    if (this.conn && this.conn.open) return;
+
+    console.log("Tentando conectar a:", remotePeerId);
+    const conn = this.peer.connect(remotePeerId, {
+      reliable: true
+    });
     this.handleConnection(conn);
   }
 
   private handleConnection(conn: DataConnection) {
+    // Se já temos uma conexão ativa, talvez queiramos fechar a nova ou a antiga.
+    // Para simplificar, vamos assumir que a nova substitui se a antiga estiver ruim,
+    // ou ignorar se já estivermos bem.
+    if (this.conn && this.conn.open) {
+        return; 
+    }
+
     this.conn = conn;
 
     conn.on('open', () => {
-      console.log('Connected to:', conn.peer);
+      console.log('Conectado com:', conn.peer);
       if (this.onConnectCallback) this.onConnectCallback();
     });
 
@@ -53,13 +73,13 @@ export class PeerService {
     });
 
     conn.on('close', () => {
-      console.log('Connection closed');
+      console.log('Conexão fechada');
       this.conn = null;
       if (this.onCloseCallback) this.onCloseCallback();
     });
 
     conn.on('error', (err) => {
-      console.error('Connection error:', err);
+      console.error('Erro na conexão:', err);
       if (this.onCloseCallback) this.onCloseCallback();
     });
   }
@@ -69,7 +89,7 @@ export class PeerService {
       const packet: NetworkPacket = { type, payload };
       this.conn.send(packet);
     } else {
-      console.warn('Cannot send, connection not open');
+      console.warn('Não foi possível enviar, sem conexão');
     }
   }
 
