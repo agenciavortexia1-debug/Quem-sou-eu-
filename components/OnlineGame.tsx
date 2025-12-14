@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { peerService } from '../services/peerService';
 import { AnswerType, NetworkPacket, PacketType, ChatMessage, PlayerProfile } from '../types';
-import { ArrowLeft, Send, AlertTriangle, User, RefreshCw, Trophy, Crown, Check, Sparkles, Heart } from 'lucide-react';
+import { Send, User, RefreshCw, Trophy, Crown, Check, Sparkles, Heart, History, Medal } from 'lucide-react';
 
 interface Props {
   myProfile: PlayerProfile;
@@ -13,6 +13,16 @@ enum Phase {
   SETUP = 'SETUP',
   PLAYING = 'PLAYING',
   GAME_OVER = 'GAME_OVER'
+}
+
+interface GameHistory {
+  tuyWins: number;
+  rickWins: number;
+  matches: Array<{
+    winner: 'TUY' | 'RICK';
+    character: string;
+    date: string;
+  }>;
 }
 
 const normalizeString = (str: string) => {
@@ -28,8 +38,6 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
   const [phase, setPhase] = useState<Phase>(Phase.CONNECTING);
   const [connectionStatus, setConnectionStatus] = useState('Procurando seu amor...');
   
-  // Hardcoded IDs para facilitar a conexão
-  // Use um sufixo v2 para garantir que não conflite com testes anteriores
   const TUY_ID = 'tuy-player-id-love-game-v2';
   const RICK_ID = 'rick-player-id-love-game-v2';
   
@@ -45,13 +53,43 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [currentInput, setCurrentInput] = useState('');
   
-  // Quem começa? Vamos dizer que quem escolhe primeiro espera, ou podemos fixar.
-  // Vamos fazer dinâmico: quem recebe o "NÃO" joga.
+  // Lógica de Turno Estrita: Sempre alterna após uma resposta
   const [isMyTurn, setIsMyTurn] = useState(false); 
   const [gameResult, setGameResult] = useState<'VICTORY' | 'DEFEAT' | null>(null);
 
+  // Placar e Histórico
+  const [historyData, setHistoryData] = useState<GameHistory>({ tuyWins: 0, rickWins: 0, matches: [] });
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const handlePacketRef = useRef<(packet: NetworkPacket) => void>(() => {});
+
+  // --- PERSISTÊNCIA ---
+  useEffect(() => {
+    const saved = localStorage.getItem('tuy_rick_game_history');
+    if (saved) {
+      try {
+        setHistoryData(JSON.parse(saved));
+      } catch (e) {
+        console.error("Erro ao carregar histórico", e);
+      }
+    }
+  }, []);
+
+  const saveVictory = (winnerProfile: PlayerProfile, character: string) => {
+    setHistoryData(prev => {
+      const newData = {
+        ...prev,
+        tuyWins: winnerProfile === 'TUY' ? prev.tuyWins + 1 : prev.tuyWins,
+        rickWins: winnerProfile === 'RICK' ? prev.rickWins + 1 : prev.rickWins,
+        matches: [
+          { winner: winnerProfile, character, date: new Date().toLocaleDateString('pt-BR') },
+          ...prev.matches
+        ].slice(0, 50) // Guarda apenas os ultimos 50 jogos
+      };
+      localStorage.setItem('tuy_rick_game_history', JSON.stringify(newData));
+      return newData;
+    });
+  };
 
   // Auto-scroll
   useEffect(() => {
@@ -64,8 +102,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
   useEffect(() => {
     if (phase === Phase.SETUP && myCharacter && opponentCharacter) {
       setPhase(Phase.PLAYING);
-      // Regra inicial: A TUY começa perguntando (se ela for a TUY)
-      // Se eu sou a TUY, é minha vez. Se eu sou o RICK, não é.
+      // Regra inicial: A TUY sempre começa perguntando
       setIsMyTurn(myProfile === 'TUY');
     }
   }, [phase, myCharacter, opponentCharacter, myProfile]);
@@ -75,11 +112,8 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
     handlePacketRef.current = (packet: NetworkPacket) => {
       switch (packet.type) {
         case PacketType.EXCHANGE_CHARACTER:
-          // Recebi o personagem que o oponente escolheu para MIM
           if (opponentCharacter === packet.payload) return;
           setOpponentCharacter(packet.payload);
-          
-          // Reenvia confirmação
           if (myCharacter) {
              peerService.send(PacketType.EXCHANGE_CHARACTER, myCharacter);
           }
@@ -102,17 +136,18 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
             timestamp: Date.now()
           }]);
           
-          const isNegative = packet.payload === AnswerType.NO || packet.payload === AnswerType.PROBABLY_NOT;
-          if (isNegative) {
-            setIsMyTurn(false); // Minha vez acaba
-          } else {
-            setIsMyTurn(true); // Continuo jogando
-          }
+          // NOVA LÓGICA: Recebeu resposta? Agora é MINHA vez de perguntar.
+          // Não importa se foi Sim ou Não.
+          setIsMyTurn(true);
           break;
 
         case PacketType.GAME_WON:
+          // O oponente ganhou
           setGameResult('DEFEAT');
           setPhase(Phase.GAME_OVER);
+          // Atualiza placar localmente (o oponente já salvou o dele, mas salvamos o nosso aqui para garantir sincronia visual)
+          const winner = myProfile === 'TUY' ? 'RICK' : 'TUY';
+          saveVictory(winner, myCharacter); // O oponente descobriu quem EU era (myCharacter)
           break;
 
         case PacketType.RESTART:
@@ -122,7 +157,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
     };
   });
 
-  // --- PEER INITIALIZATION & AUTO CONNECT ---
+  // --- PEER INITIALIZATION ---
   useEffect(() => {
     let mounted = true;
     let connectInterval: any = null;
@@ -132,10 +167,8 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
         await peerService.initialize(myPeerId);
         
         if (mounted) {
-            // Tenta conectar repetidamente até conseguir
             connectInterval = setInterval(() => {
                 if (phase === Phase.CONNECTING && (!peerService.conn || !peerService.conn.open)) {
-                    console.log("Tentando conectar auto...");
                     peerService.connect(targetPeerId);
                 }
             }, 2000);
@@ -143,7 +176,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
       } catch (err) {
         if (mounted) {
           console.error(err);
-          setConnectionStatus('Erro na conexão. Tente recarregar.');
+          setConnectionStatus('Erro na conexão.');
         }
       }
     };
@@ -163,7 +196,6 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
       if (mounted) {
         setConnectionStatus('Conexão perdida. Reconectando...');
         setPhase(Phase.CONNECTING);
-        // Reinicia tentativa de conexão
         connectInterval = setInterval(() => {
              if (!peerService.conn || !peerService.conn.open) {
                  peerService.connect(targetPeerId);
@@ -196,11 +228,12 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
     const guess = normalizeString(currentInput);
     const target = normalizeString(opponentCharacter);
 
-    // Validação de vitória
+    // Validação de vitória (Adivinhei corretamente)
     if (opponentCharacter && guess === target) {
       setGameResult('VICTORY');
       setPhase(Phase.GAME_OVER);
       peerService.send(PacketType.GAME_WON, null); 
+      saveVictory(myProfile, opponentCharacter); // Salva minha vitória
       return;
     }
 
@@ -212,6 +245,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
       timestamp: Date.now()
     }]);
     
+    // Enviei pergunta, agora passo a vez (espero resposta)
     setIsMyTurn(false);
     setCurrentInput('');
   };
@@ -225,12 +259,9 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
       timestamp: Date.now()
     }]);
 
-    const isNegative = ans === AnswerType.NO || ans === AnswerType.PROBABLY_NOT;
-    if (isNegative) {
-      setIsMyTurn(true);
-    } else {
-      setIsMyTurn(false); 
-    }
+    // NOVA LÓGICA: Respondi? Passo a vez para o oponente perguntar.
+    // Antes dependia do "Não", agora é sempre false.
+    setIsMyTurn(false);
   };
 
   const fullReset = (sendSignal: boolean) => {
@@ -241,7 +272,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
     setMessages([]);
     setGameResult(null);
     setPhase(Phase.SETUP);
-    setIsMyTurn(myProfile === 'TUY');
+    setIsMyTurn(myProfile === 'TUY'); // Tuy sempre recomeça
   };
 
   // --- RENDER UTILS ---
@@ -251,6 +282,22 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
   const opponentName = myProfile === 'TUY' ? 'Rick' : 'Tuy';
   const myName = myProfile;
 
+  // --- COMPONENTS ---
+
+  const ScoreBoard = () => (
+    <div className="flex items-center justify-between bg-slate-900/50 rounded-lg p-2 mb-2 text-xs md:text-sm border border-slate-700/50 w-full max-w-[200px] mx-auto">
+        <div className="flex flex-col items-center px-2">
+            <span className="text-pink-400 font-bold">TUY</span>
+            <span className="text-white font-mono">{historyData.tuyWins}</span>
+        </div>
+        <div className="h-6 w-px bg-slate-700"></div>
+        <div className="flex flex-col items-center px-2">
+            <span className="text-blue-400 font-bold">RICK</span>
+            <span className="text-white font-mono">{historyData.rickWins}</span>
+        </div>
+    </div>
+  );
+
   if (phase === Phase.CONNECTING) return (
     <div className={cardContainerClass}>
       <div className={cardBodyClass}>
@@ -258,7 +305,6 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
             <Heart className="w-12 h-12 mb-4 animate-bounce text-pink-500" fill="currentColor" />
             <p className="animate-pulse text-lg font-medium">{connectionStatus}</p>
             <p className="text-xs text-slate-500 mt-4">Esperando o {opponentName} entrar...</p>
-            
             <button onClick={onBack} className="mt-8 text-slate-500 underline text-sm">Cancelar</button>
         </div>
       </div>
@@ -269,7 +315,8 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
     <div className={cardContainerClass}>
       <div className={cardBodyClass}>
         <div className="text-center">
-          <div className="bg-gradient-to-br from-pink-500 to-rose-600 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 border-4 border-slate-800 shadow-lg">
+          <ScoreBoard />
+          <div className="mt-4 bg-gradient-to-br from-pink-500 to-rose-600 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 border-4 border-slate-800 shadow-lg">
              <User className="w-10 h-10 text-white" />
           </div>
           
@@ -311,7 +358,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
                 {myCharacter && (
                   <button onClick={() => {
                       setMyCharacter('');
-                      peerService.send(PacketType.EXCHANGE_CHARACTER, ''); // Reset simples
+                      peerService.send(PacketType.EXCHANGE_CHARACTER, '');
                   }} className="text-xs text-pink-400 hover:text-pink-300 underline p-2 transition-colors">
                     Mudar minha escolha
                   </button>
@@ -331,7 +378,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
   if (phase === Phase.GAME_OVER) return (
     <div className={cardContainerClass}>
       <div className={cardBodyClass}>
-        <div className="text-center">
+        <div className="text-center max-h-[80vh] overflow-y-auto scrollbar-hide">
           {gameResult === 'VICTORY' ? (
             <>
               <div className="relative inline-block">
@@ -342,9 +389,9 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
               <h2 className="text-3xl font-black text-white mb-2">
                 PARABÉNS {myName}!
               </h2>
-              <p className="text-slate-400 mb-8 font-medium">Você descobriu quem você era!</p>
+              <p className="text-slate-400 mb-6 font-medium">Você acertou!</p>
               
-              <div className="relative mb-10 group">
+              <div className="relative mb-8 group">
                 <div className="absolute -inset-1 bg-gradient-to-r from-pink-600 to-rose-600 rounded-2xl blur opacity-25"></div>
                 <div className="relative bg-slate-900 border border-pink-500/30 p-6 rounded-xl shadow-xl">
                    <p className="text-xs text-pink-500/70 uppercase tracking-[0.2em] mb-2 font-bold">Você era</p>
@@ -353,7 +400,6 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
                    </div>
                 </div>
               </div>
-              <p className="text-sm text-yellow-500/80 mb-6 italic">Agora o {opponentName} deve um beijinho! 😘</p>
             </>
           ) : (
             <>
@@ -363,7 +409,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
               </div>
 
               <h2 className="text-3xl font-bold text-white mb-2">{opponentName} Venceu!</h2>
-              <p className="text-slate-400 mb-8">Ele(a) descobriu primeiro.</p>
+              <p className="text-slate-400 mb-6">Você perdeu essa rodada.</p>
               
               <div className="bg-slate-950/50 p-6 rounded-xl border border-slate-700 mb-6 shadow-inner">
                  <p className="text-xs text-slate-500 uppercase tracking-[0.2em] mb-2 font-bold flex items-center justify-center gap-2">
@@ -373,9 +419,48 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
                    {myCharacter}
                  </div>
               </div>
-              <p className="text-sm text-rose-400 mb-6">Você deve um beijinho! 💋</p>
             </>
           )}
+
+          {/* PLACAR GERAL */}
+          <div className="bg-slate-900/50 rounded-xl p-4 mb-6 border border-slate-700">
+             <h3 className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-3 flex items-center justify-center gap-2">
+               <Medal size={14} /> Placar Total
+             </h3>
+             <div className="flex justify-center items-center gap-8">
+                <div className="text-center">
+                    <div className="text-2xl font-black text-pink-500">{historyData.tuyWins}</div>
+                    <div className="text-[10px] text-slate-500 font-bold">TUY</div>
+                </div>
+                <div className="text-slate-600 text-xl font-light">x</div>
+                <div className="text-center">
+                    <div className="text-2xl font-black text-blue-500">{historyData.rickWins}</div>
+                    <div className="text-[10px] text-slate-500 font-bold">RICK</div>
+                </div>
+             </div>
+          </div>
+
+          {/* HISTÓRICO RECENTE */}
+          {historyData.matches.length > 0 && (
+            <div className="text-left bg-slate-900/30 rounded-xl p-4 mb-6">
+                <h3 className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <History size={14} /> Personagens Descobertos
+                </h3>
+                <div className="space-y-2 max-h-32 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-slate-700">
+                    {historyData.matches.slice(0, 5).map((match, idx) => (
+                        <div key={idx} className="flex justify-between items-center text-xs border-b border-slate-800/50 pb-1 last:border-0">
+                            <span className={match.winner === 'TUY' ? 'text-pink-400' : 'text-blue-400'}>
+                                {match.character}
+                            </span>
+                            <span className="text-slate-600 text-[10px] bg-slate-800 px-1.5 py-0.5 rounded">
+                                {match.winner}
+                            </span>
+                        </div>
+                    ))}
+                </div>
+            </div>
+          )}
+
           <button 
             onClick={() => fullReset(true)} 
             className="w-full py-4 bg-pink-600 hover:bg-pink-500 active:bg-pink-700 text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-pink-900/20"
@@ -402,11 +487,17 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
           </div>
         </div>
 
-        {/* Center: Turn Status */}
-        <div className="px-2">
-          <div className={`px-3 py-1 rounded-full text-[10px] md:text-xs font-bold border whitespace-nowrap shadow-sm ${isMyTurn ? 'bg-pink-900/30 border-pink-500 text-pink-400 animate-pulse' : 'bg-slate-800 border-slate-600 text-slate-400'}`}>
-            {isMyTurn ? `VEZ DA ${myProfile}` : `VEZ DO ${opponentName.toUpperCase()}`}
-          </div>
+        {/* Center: Turn Status & Mini Score */}
+        <div className="px-2 flex flex-col items-center">
+            {/* Mini Placar Mobile */}
+            <div className="flex gap-2 text-[10px] font-mono text-slate-500 mb-1">
+                <span className={historyData.tuyWins > historyData.rickWins ? 'text-pink-400 font-bold' : ''}>T:{historyData.tuyWins}</span>
+                <span>-</span>
+                <span className={historyData.rickWins > historyData.tuyWins ? 'text-blue-400 font-bold' : ''}>R:{historyData.rickWins}</span>
+            </div>
+            <div className={`px-3 py-1 rounded-full text-[10px] md:text-xs font-bold border whitespace-nowrap shadow-sm ${isMyTurn ? 'bg-pink-900/30 border-pink-500 text-pink-400 animate-pulse' : 'bg-slate-800 border-slate-600 text-slate-400'}`}>
+                {isMyTurn ? `VEZ DA ${myProfile}` : `VEZ DO ${opponentName.toUpperCase()}`}
+            </div>
         </div>
 
         {/* Right: Opponent (O QUE EU SEI) */}
@@ -422,7 +513,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 md:p-4 space-y-3 bg-slate-900/50 overscroll-contain">
         <div className="flex justify-center my-4">
            <span className="text-[10px] md:text-xs text-slate-400 bg-slate-800/80 px-3 py-1 rounded-full border border-slate-700/50">
-             Faça perguntas de "Sim" ou "Não" para descobrir quem VOCÊ é.
+             Faça perguntas de "Sim" ou "Não". A vez alterna sempre!
            </span>
         </div>
         
@@ -468,14 +559,15 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
                value={currentInput}
                onChange={e => setCurrentInput(e.target.value)}
                onKeyDown={e => e.key === 'Enter' && sendMessage()}
-               placeholder={`Perguntar ao ${opponentName}...`}
-               className="flex-1 bg-slate-950 border border-slate-600 text-white px-4 py-3.5 rounded-full focus:outline-none focus:border-pink-500 placeholder:text-slate-600 text-base"
+               placeholder={isMyTurn ? `Perguntar ao ${opponentName}...` : `Aguarde o ${opponentName}...`}
+               disabled={!isMyTurn}
+               className={`flex-1 bg-slate-950 border border-slate-600 text-white px-4 py-3.5 rounded-full focus:outline-none focus:border-pink-500 placeholder:text-slate-600 text-base ${!isMyTurn ? 'opacity-50' : ''}`}
              />
              <button 
                 onClick={sendMessage} 
-                disabled={!currentInput.trim()} 
+                disabled={!currentInput.trim() || !isMyTurn} 
                 className={`p-3.5 rounded-full transition-all duration-200 ${
-                    !currentInput.trim() 
+                    !currentInput.trim() || !isMyTurn
                     ? 'bg-slate-700 text-slate-500' 
                     : 'bg-pink-600 text-white shadow-lg shadow-pink-900/50 active:scale-90'
                 }`}
