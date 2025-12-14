@@ -103,6 +103,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
   useEffect(() => {
     if (phase === Phase.SETUP && myCharacter && opponentCharacter) {
       setPhase(Phase.PLAYING);
+      // Regra inicial: A TUY sempre começa perguntando
       setIsMyTurn(myProfile === 'TUY');
     }
   }, [phase, myCharacter, opponentCharacter, myProfile]);
@@ -140,6 +141,8 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
             content: packet.payload,
             timestamp: Date.now()
           }]);
+          // Recebi pergunta: não faço nada com o turno ainda, 
+          // continuo bloqueado até responder.
           break;
 
         case PacketType.ANSWER:
@@ -149,7 +152,10 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
             content: packet.payload,
             timestamp: Date.now()
           }]);
-          setIsMyTurn(true);
+          
+          // LÓGICA CORRIGIDA: Eu perguntei, recebi a resposta.
+          // Agora passo a vez para o outro perguntar.
+          setIsMyTurn(false);
           break;
 
         case PacketType.GAME_WON:
@@ -257,6 +263,8 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
       content: currentInput,
       timestamp: Date.now()
     }]);
+    
+    // Enviei pergunta, agora passo a vez (espero resposta)
     setIsMyTurn(false);
     setCurrentInput('');
   };
@@ -269,7 +277,10 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
       content: ans,
       timestamp: Date.now()
     }]);
-    setIsMyTurn(false);
+    
+    // LÓGICA CORRIGIDA: Respondi a pergunta do oponente?
+    // Agora ganho o direito de fazer a minha pergunta.
+    setIsMyTurn(true);
   };
 
   const fullReset = (sendSignal: boolean) => {
