@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { peerService } from '../services/peerService';
 import { AnswerType, NetworkPacket, PacketType, ChatMessage, PlayerProfile } from '../types';
-import { Send, User, RefreshCw, Trophy, Crown, Check, Sparkles, Heart, History, Medal } from 'lucide-react';
+import { Send, User, RefreshCw, Trophy, Crown, Check, Sparkles, Heart, History, Medal, Wifi } from 'lucide-react';
 
 interface Props {
   myProfile: PlayerProfile;
@@ -107,6 +107,24 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
     }
   }, [phase, myCharacter, opponentCharacter, myProfile]);
 
+  // NOVA LÓGICA: Reenvio automático da escolha para destravar o jogo
+  useEffect(() => {
+    let interval: any;
+    if (phase === Phase.SETUP && myCharacter) {
+        // Envia imediatamente
+        peerService.send(PacketType.EXCHANGE_CHARACTER, myCharacter);
+        
+        // Configura intervalo de reenvio a cada 2 segundos
+        interval = setInterval(() => {
+            console.log("Reenviando personagem para garantir sincronia...");
+            peerService.send(PacketType.EXCHANGE_CHARACTER, myCharacter);
+        }, 2000);
+    }
+    return () => {
+        if (interval) clearInterval(interval);
+    };
+  }, [phase, myCharacter]);
+
   // --- PACKET HANDLER ---
   useEffect(() => {
     handlePacketRef.current = (packet: NetworkPacket) => {
@@ -137,7 +155,6 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
           }]);
           
           // NOVA LÓGICA: Recebeu resposta? Agora é MINHA vez de perguntar.
-          // Não importa se foi Sim ou Não.
           setIsMyTurn(true);
           break;
 
@@ -145,9 +162,9 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
           // O oponente ganhou
           setGameResult('DEFEAT');
           setPhase(Phase.GAME_OVER);
-          // Atualiza placar localmente (o oponente já salvou o dele, mas salvamos o nosso aqui para garantir sincronia visual)
+          // Atualiza placar localmente
           const winner = myProfile === 'TUY' ? 'RICK' : 'TUY';
-          saveVictory(winner, myCharacter); // O oponente descobriu quem EU era (myCharacter)
+          saveVictory(winner, myCharacter); 
           break;
 
         case PacketType.RESTART:
@@ -228,12 +245,12 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
     const guess = normalizeString(currentInput);
     const target = normalizeString(opponentCharacter);
 
-    // Validação de vitória (Adivinhei corretamente)
+    // Validação de vitória
     if (opponentCharacter && guess === target) {
       setGameResult('VICTORY');
       setPhase(Phase.GAME_OVER);
       peerService.send(PacketType.GAME_WON, null); 
-      saveVictory(myProfile, opponentCharacter); // Salva minha vitória
+      saveVictory(myProfile, opponentCharacter); 
       return;
     }
 
@@ -245,7 +262,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
       timestamp: Date.now()
     }]);
     
-    // Enviei pergunta, agora passo a vez (espero resposta)
+    // Enviei pergunta, agora passo a vez
     setIsMyTurn(false);
     setCurrentInput('');
   };
@@ -259,8 +276,7 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
       timestamp: Date.now()
     }]);
 
-    // NOVA LÓGICA: Respondi? Passo a vez para o oponente perguntar.
-    // Antes dependia do "Não", agora é sempre false.
+    // Respondi? Passo a vez
     setIsMyTurn(false);
   };
 
@@ -272,12 +288,13 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
     setMessages([]);
     setGameResult(null);
     setPhase(Phase.SETUP);
-    setIsMyTurn(myProfile === 'TUY'); // Tuy sempre recomeça
+    setIsMyTurn(myProfile === 'TUY'); 
   };
 
   // --- RENDER UTILS ---
   const cardContainerClass = "flex flex-col h-full justify-center px-4 md:px-0";
-  const cardBodyClass = "w-full max-w-md mx-auto bg-slate-800/80 backdrop-blur-md p-6 md:p-8 rounded-2xl border border-pink-500/20 shadow-2xl";
+  // Adicionado 'relative' para posicionar o ícone Wifi
+  const cardBodyClass = "relative w-full max-w-md mx-auto bg-slate-800/80 backdrop-blur-md p-6 md:p-8 rounded-2xl border border-pink-500/20 shadow-2xl";
 
   const opponentName = myProfile === 'TUY' ? 'Rick' : 'Tuy';
   const myName = myProfile;
@@ -314,6 +331,13 @@ const OnlineGame: React.FC<Props> = ({ myProfile, onBack }) => {
   if (phase === Phase.SETUP) return (
     <div className={cardContainerClass}>
       <div className={cardBodyClass}>
+        
+        {/* Connection Indicator */}
+        <div className="absolute top-4 right-4 flex items-center gap-1.5 bg-emerald-950/30 px-2 py-1 rounded-full border border-emerald-500/20 shadow-sm z-10">
+           <Wifi size={12} className="text-emerald-500 animate-pulse" />
+           <span className="text-[10px] text-emerald-500/80 font-bold tracking-wider">ONLINE</span>
+        </div>
+
         <div className="text-center">
           <ScoreBoard />
           <div className="mt-4 bg-gradient-to-br from-pink-500 to-rose-600 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 border-4 border-slate-800 shadow-lg">
